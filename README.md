@@ -77,7 +77,7 @@ async fn process_security_events(events: Vec<SecurityEvent>) -> ThreatAnalysis {
 
 ```bash
 # Clone and build
-git clone https://github.com/yourusername/SentinelEdge.git
+git clone https://github.com/harrison001/SentinelEdge.git
 cd SentinelEdge
 cargo build --release
 
