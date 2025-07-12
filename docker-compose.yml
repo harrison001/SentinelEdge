@@ -14,13 +14,10 @@ services:
       - /var/log/sentinel-edge:/var/log/sentinel-edge:rw
       - ./config:/etc/sentinel-edge:ro
     environment:
-      - OPENAI_API_KEY=${OPENAI_API_KEY}
       - RUST_LOG=info
     restart: unless-stopped
-    depends_on:
-      - redis
-      - postgres
     
+  # 📋 CONCEPTUAL: Supporting services for enterprise deployment
   redis:
     image: redis:7-alpine
     container_name: sentinel-redis
@@ -29,6 +26,7 @@ services:
     volumes:
       - redis_data:/data
     restart: unless-stopped
+    profiles: ["enterprise"]  # Only start with --profile enterprise
     
   postgres:
     image: postgres:15-alpine
@@ -41,8 +39,8 @@ services:
       - "5432:5432"
     volumes:
       - postgres_data:/var/lib/postgresql/data
-      - ./sql/init.sql:/docker-entrypoint-initdb.d/init.sql
     restart: unless-stopped
+    profiles: ["enterprise"]  # Only start with --profile enterprise
     
   grafana:
     image: grafana/grafana:latest
@@ -53,9 +51,8 @@ services:
       - GF_SECURITY_ADMIN_PASSWORD=${GRAFANA_PASSWORD:-admin123}
     volumes:
       - grafana_data:/var/lib/grafana
-      - ./grafana/dashboards:/var/lib/grafana/dashboards
-      - ./grafana/provisioning:/etc/grafana/provisioning
     restart: unless-stopped
+    profiles: ["enterprise"]  # Only start with --profile enterprise
     
   prometheus:
     image: prom/prometheus:latest
@@ -63,14 +60,12 @@ services:
     ports:
       - "9090:9090"
     volumes:
-      - ./prometheus/prometheus.yml:/etc/prometheus/prometheus.yml
       - prometheus_data:/prometheus
     command:
       - '--config.file=/etc/prometheus/prometheus.yml'
       - '--storage.tsdb.path=/prometheus'
-      - '--web.console.libraries=/etc/prometheus/console_libraries'
-      - '--web.console.templates=/etc/prometheus/consoles'
     restart: unless-stopped
+    profiles: ["enterprise"]  # Only start with --profile enterprise
 
 volumes:
   redis_data:
@@ -80,4 +75,8 @@ volumes:
 
 networks:
   default:
-    name: sentinel-edge-network 
+    name: sentinel-edge-network
+
+# Usage:
+# Basic: docker-compose up sentinel-edge
+# Enterprise: docker-compose --profile enterprise up 

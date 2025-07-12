@@ -156,7 +156,7 @@ SentinelEdge demonstrates advanced eBPF kernel programming techniques combined w
 ├─────────────────────────────────────────────────────────────────────────┤
 │                           User Space                                    │
 │  ┌─────────────┐  ┌─────────────┐  ┌─────────────┐  ┌─────────────┐    │
-│  │   Config    │  │   Event     │  │   AI        │  │   Response  │    │
+│  │   Config    │  │   Event     │  │   Threat    │  │   Response  │    │
 │  │  Manager    │  │  Processor  │  │  Classifier │  │   Handler   │    │
 │  └─────────────┘  └─────────────┘  └─────────────┘  └─────────────┘    │
 │                                                                         │
@@ -284,7 +284,7 @@ SentinelEdge demonstrates advanced eBPF kernel programming techniques combined w
 │                      Internal Zone                                      │
 │                       (Trusted)                                         │
 │  ┌─────────────┐  ┌─────────────┐  ┌─────────────┐  ┌─────────────┐    │
-│  │   Master    │  │   Storage   │  │   Message   │  │   AI        │    │
+│  │   Master    │  │   Storage   │  │   Message   │  │   Analysis  │    │
 │  │   Nodes     │  │   Cluster   │  │   Broker    │  │   Service   │    │
 │  └─────────────┘  └─────────────┘  └─────────────┘  └─────────────┘    │
 └─────────────────────────┬───────────────────────────────────────────────┘
@@ -318,7 +318,7 @@ SentinelEdge demonstrates advanced eBPF kernel programming techniques combined w
         ┌─────────────────┼─────────────────┐
         │                 │                 │
 ┌───────▼───────┐ ┌───────▼───────┐ ┌───────▼───────┐
-│   Stream      │ │   Batch       │ │   AI          │
+│   Stream      │ │   Batch       │ │   Analysis    │
 │  Processing   │ │  Processing   │ │  Processing   │
 │  (Real-time)  │ │  (Hourly)     │ │  (On-demand)  │
 └───────┬───────┘ └───────┬───────┘ └───────┬───────┘
