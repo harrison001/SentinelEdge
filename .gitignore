@@ -1,0 +1,88 @@
+# Rust
+/target/
+**/*.rs.bk
+# Cargo.lock - Keep for applications, remove for libraries
+
+# eBPF compiled objects
+*.o
+*.ll
+*.bc
+*.skel.h
+*.bpf.o
+
+# Logs and temporary files
+*.log
+*.tmp
+*.swp
+*.swo
+*~
+
+# IDE and editor files
+.vscode/
+.idea/
+*.iml
+.vim/
+.netrwhist
+
+# OS generated files
+.DS_Store
+.DS_Store?
+._*
+.Spotlight-V100
+.Trashes
+ehthumbs.db
+Thumbs.db
+
+# Build artifacts
+simple_demo
+demo
+/build/
+/dist/
+
+# Runtime files
+*.pid
+*.sock
+*.out
+
+# Environment files
+.env
+.env.local
+.env.*.local
+
+# Testing
+/coverage/
+*.profraw
+
+# Documentation build
+/docs/_build/
+
+# Backup files
+*.backup
+*.bak
+*.orig
+
+# Temporary directories
+/tmp/
+/temp/
+
+# Docker
+.dockerignore
+
+# Secrets (just in case)
+secrets.toml
+*.key
+*.pem
+*.crt
+*.csr
+
+# Large binary files that shouldn't be in git
+*.bin
+*.exe
+*.dll
+*.so
+*.dylib
+
+# Package managers
+node_modules/
+.npm/
+.yarn/ 

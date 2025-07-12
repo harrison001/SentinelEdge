@@ -1,0 +1,32 @@
+# SentinelEdge Configuration
+# Focus on functionality, keep it simple
+
+[ai]
+provider = "local"  # Use local rules by default, no external API dependency
+model = "local-rules"
+timeout = 10
+
+[response]
+log_file = "./sentinel-edge.log"
+enable_quarantine = false
+enable_process_kill = false
+alert_threshold = 0.7
+
+[monitoring]
+monitor_network = true
+monitor_processes = true
+monitor_files = true
+
+# Sensitive paths to monitor
+sensitive_paths = [
+    "/etc/passwd",
+    "/etc/shadow",
+    "/root/.ssh",
+    "/home/*/.ssh"
+]
+
+# System processes to ignore
+ignored_processes = [
+    "systemd",
+    "kthreadd"
+] 

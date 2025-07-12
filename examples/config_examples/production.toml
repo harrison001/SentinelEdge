@@ -1,0 +1,102 @@
+# SentinelEdge Production Configuration
+# This configuration is optimized for production deployment
+
+[ai]
+provider = "openai"  # or "claude", "local"
+api_key = "${OPENAI_API_KEY}"  # Set via environment variable
+model = "gpt-4"
+endpoint = "https://api.openai.com"
+timeout = 30
+
+[response]
+log_file = "/var/log/sentinel-edge/security.log"
+webhook_url = "https://your-siem.company.com/webhook/sentinel-edge"
+enable_quarantine = true
+enable_process_kill = false  # Disabled for production safety
+alert_threshold = 0.7
+
+[monitoring]
+monitor_network = true
+monitor_processes = true
+monitor_files = true
+
+# Sensitive paths to monitor closely
+sensitive_paths = [
+    "/etc/passwd",
+    "/etc/shadow", 
+    "/etc/sudoers",
+    "/root/.ssh",
+    "/home/*/.ssh",
+    "/var/log/auth.log",
+    "/etc/crontab",
+    "/etc/systemd",
+    "/usr/bin/sudo",
+    "/bin/su"
+]
+
+# Processes to ignore (system processes)
+ignored_processes = [
+    "systemd",
+    "kthreadd", 
+    "ksoftirqd",
+    "rcu_",
+    "watchdog",
+    "systemd-",
+    "dbus",
+    "NetworkManager",
+    "chronyd"
+]
+
+# Production-specific settings
+[production]
+max_events_per_second = 10000
+ring_buffer_size = "1MB"
+event_batch_size = 100
+worker_threads = 4
+log_level = "info"
+metrics_enabled = true
+health_check_interval = 30
+
+# High availability settings
+[ha]
+enabled = true
+cluster_nodes = [
+    "sentinel-01.company.com",
+    "sentinel-02.company.com", 
+    "sentinel-03.company.com"
+]
+leader_election = true
+data_replication = true
+
+# Security settings
+[security]
+tls_enabled = true
+cert_file = "/etc/sentinel-edge/tls/server.crt"
+key_file = "/etc/sentinel-edge/tls/server.key"
+ca_file = "/etc/sentinel-edge/tls/ca.crt"
+client_auth_required = true
+
+# Integration settings
+[integrations]
+# Splunk integration
+splunk_hec_url = "https://splunk.company.com:8088/services/collector"
+splunk_token = "${SPLUNK_HEC_TOKEN}"
+
+# Elasticsearch integration  
+elasticsearch_url = "https://elasticsearch.company.com:9200"
+elasticsearch_index = "sentinel-edge-events"
+elasticsearch_auth = "${ELASTIC_AUTH}"
+
+# Slack notifications
+slack_webhook = "${SLACK_WEBHOOK_URL}"
+slack_channel = "#security-alerts"
+
+# Email notifications
+smtp_server = "smtp.company.com"
+smtp_port = 587
+smtp_username = "${SMTP_USER}"
+smtp_password = "${SMTP_PASS}"
+alert_recipients = [
+    "security-team@company.com",
+    "soc@company.com"
+] 

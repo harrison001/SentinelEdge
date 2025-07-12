@@ -1,0 +1,57 @@
+[package]
+name = "kernel-agent"
+version = "0.2.0"
+edition = "2021"
+description = "Advanced eBPF kernel monitoring agent with high-performance networking and security analysis"
+license = "MIT"
+authors = ["SentinelEdge Team"]
+
+[dependencies]
+anyhow = "1.0"
+tokio = { version = "1.0", features = ["full"] }
+tokio-stream = "0.1"
+tracing = "0.1"
+chrono = { version = "0.4", features = ["serde"] }
+serde = { version = "1.0", features = ["derive"] }
+serde_json = "1.0"
+thiserror = "1.0"
+fastrand = "2.0"
+
+# eBPF dependencies (Linux only)
+[target.'cfg(target_os = "linux")'.dependencies]
+libbpf-rs = "0.23"
+libbpf-sys = "1.4"
+plain = "0.2"
+
+# Performance optimization dependencies
+crossbeam-channel = "0.5"
+crossbeam-utils = "0.8"
+parking_lot = "0.12"
+dashmap = "5.5"
+atomic = "0.6"
+
+# Networking dependencies
+socket2 = { version = "0.5", features = ["all"] }
+nix = { version = "0.27", features = ["net", "socket", "process", "signal"] }
+
+# Memory management
+memmap2 = "0.9"
+
+# Build configuration
+[build-dependencies]
+cc = "1.0"
+
+# Features for conditional compilation
+[features]
+default = ["advanced-networking", "memory-analysis", "performance-optimized"]
+advanced-networking = []
+memory-analysis = []
+performance-optimized = []
+syscall-modification = []
+kernel-structures = []
+
+# Development dependencies
+[dev-dependencies]
+criterion = { version = "0.5", features = ["html_reports"] }
+proptest = "1.0"
+tokio-test = "0.4" 
