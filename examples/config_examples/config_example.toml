@@ -1,5 +1,6 @@
-# SentinelEdge Production Configuration Example
-# This configuration demonstrates production deployment concepts
+# SentinelEdge Configuration Example
+# This configuration demonstrates both basic and advanced deployment concepts
+# 📋 Features marked as "CONCEPTUAL" are architectural designs for educational purposes
 
 [monitoring]
 monitor_network = true
@@ -8,33 +9,27 @@ monitor_files = true
 
 # Sensitive paths to monitor closely
 sensitive_paths = [
-    "/etc/passwd",
-    "/etc/shadow", 
-    "/etc/sudoers",
-    "/root/.ssh",
-    "/home/*/.ssh",
-    "/var/log/auth.log",
-    "/etc/crontab",
-    "/etc/systemd",
-    "/usr/bin/sudo",
-    "/bin/su"
+    # System critical files
+    "/etc/passwd", "/etc/shadow", "/etc/sudoers",
+    "/root/.ssh", "/home/*/.ssh",
+    "/var/log/auth.log", "/etc/crontab",
+    "/etc/systemd", "/usr/bin/sudo", "/bin/su",
+    
+    # Application paths (add your own)
+    "/opt/app/config/*", "/var/www/html/*",
+    "/etc/nginx/*", "/var/lib/docker/*"
 ]
 
-# Processes to ignore (system processes)
+# Trusted processes (reduce false positives)
 trusted_processes = [
-    "systemd",
-    "kthreadd", 
-    "ksoftirqd",
-    "rcu_",
-    "watchdog",
-    "systemd-",
-    "dbus",
-    "NetworkManager",
-    "chronyd"
+    # System processes
+    "systemd", "kthreadd", "ksoftirqd", "rcu_",
+    "watchdog", "systemd-", "dbus", "NetworkManager",
+    "chronyd", "sentinel-edge"
 ]
 
 [threat_detection]
-provider = "rule_engine"  # Only rule-based detection is implemented
+provider = "rule_engine"  # ✅ IMPLEMENTED: Only rule-based detection
 enable_heuristics = true
 confidence_threshold = 0.7
 alert_threshold = 0.6
@@ -43,11 +38,11 @@ alert_threshold = 0.6
 log_file = "/var/log/sentinel-edge/security.log"
 webhook_url = "https://your-siem.company.com/webhook/sentinel-edge"
 enable_alerts = true
-enable_quarantine = false  # Conceptual feature
+enable_quarantine = false  # 📋 CONCEPTUAL: Not implemented
 enable_process_kill = false  # Safety consideration
 log_level = "info"
 
-# Production-specific settings
+# Performance settings
 [performance]
 max_events_per_second = 5000
 ring_buffer_size = "2MB"
@@ -55,16 +50,16 @@ event_batch_size = 100
 worker_threads = 4
 memory_limit_mb = 512
 
-# 📋 CONCEPTUAL: High availability settings
+# 📋 CONCEPTUAL: High availability (architectural concept)
 [high_availability]
-enabled = false  # Conceptual design
+enabled = false  # Not implemented
 cluster_nodes = [
     "sentinel-01.company.com",
     "sentinel-02.company.com", 
     "sentinel-03.company.com"
 ]
-leader_election = false  # Not implemented
-data_replication = false  # Not implemented
+leader_election = false  # Conceptual design
+data_replication = false  # Conceptual design
 
 # Security settings
 [security]
@@ -74,7 +69,7 @@ key_file = "/etc/sentinel-edge/tls/server.key"
 ca_file = "/etc/sentinel-edge/tls/ca.crt"
 client_auth_required = true
 
-# 📋 CONCEPTUAL: Integration settings
+# 📋 CONCEPTUAL: Integration examples (architectural patterns)
 [integrations]
 # SIEM integration concepts
 splunk_hec_url = "https://splunk.company.com:8088/services/collector"
@@ -99,6 +94,12 @@ alert_recipients = [
     "soc@company.com"
 ]
 
-# Note: The above integrations are conceptual designs demonstrating
-# production architecture patterns. Only basic logging and rule-based
-# detection are currently implemented. 
+# 📋 CONCEPTUAL: Enterprise features (architectural concepts)
+[enterprise]
+organization_id = "your-organization"
+deployment_id = "production-cluster"
+support_contact = "security-ops@company.com"
+
+# Note: Features marked as "CONCEPTUAL" demonstrate distributed systems 
+# architecture knowledge but are not currently implemented. Only core 
+# eBPF monitoring and rule-based detection are functional. 
