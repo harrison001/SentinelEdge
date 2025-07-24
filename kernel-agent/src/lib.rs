@@ -14,7 +14,7 @@ use anyhow::Context;
 #[cfg(target_os = "linux")]
 use tracing::error;
 #[cfg(target_os = "linux")]
-use libbpf_rs::{RingBufferBuilder, Object, ObjectBuilder, RingBuffer};
+use libbpf_rs::{RingBufferBuilder, Object, ObjectBuilder};
 
 pub mod events;
 
@@ -202,27 +202,38 @@ impl EbpfLoader {
 
     #[cfg(target_os = "linux")]
     async fn initialize_linux(&self) -> Result<Object> {
-        let object = ObjectBuilder::default()
+        let mut object = ObjectBuilder::default()
             .open_file("kernel-agent/src/sentinel.bpf.o")
             .context("Cannot open eBPF object file")?
             .load()
             .context("Cannot load eBPF program")?;
 
-        object.attach().context("Cannot attach eBPF program to kernel")?;
+        // Attach all programs in the object
+        for prog in object.progs_iter_mut() {
+            if let Err(e) = prog.attach() {
+                warn!("Failed to attach program {}: {}", prog.name(), e);
+            } else {
+                info!("Successfully attached program: {}", prog.name());
+            }
+        }
 
         let rb_map = object
             .map("events")
             .context("Cannot find ring buffer map")?;
 
-        // Create async ring buffer processor
+        // Clone the map for the processor
+        let rb_map_clone = rb_map.clone();
+
+        // Create async ring buffer processor  
         let sender = self.event_sender.clone();
         let metrics = Arc::clone(&self.metrics);
         let rate_limiter = Arc::clone(&self.rate_limiter);
         let shutdown = Arc::clone(&self.shutdown_signal);
         let config = self.config.clone();
 
+        // Spawn the processor with cloned map
         tokio::spawn(Self::ring_buffer_processor(
-            rb_map,
+            rb_map_clone,
             sender,
             metrics,
             rate_limiter,
@@ -242,104 +253,104 @@ impl EbpfLoader {
         shutdown: Arc<tokio::sync::Notify>,
         config: EbpfConfig,
     ) {
-        let mut rb_builder = RingBufferBuilder::new();
+        info!("📡 Starting async ring buffer processor");
+
+        // Create a channel for events from the ring buffer callback
+        let (event_tx, mut event_rx) = mpsc::unbounded_channel::<Vec<u8>>();
         
-        rb_builder.add(&rb_map, move |data: &[u8]| {
-            let sender = sender.clone();
-            let metrics = Arc::clone(&metrics);
-            let rate_limiter = Arc::clone(&rate_limiter);
+        // Build ring buffer in a blocking context to avoid Send issues
+        let rb_result = tokio::task::spawn_blocking(move || -> Result<_> {
+            let mut rb_builder = RingBufferBuilder::new();
             
-            // Rate limiting
-            if let Err(_) = rate_limiter.try_acquire() {
-                tokio::spawn(async move {
-                    let mut metrics_guard = metrics.write().await;
-                    metrics_guard.events_dropped += 1;
-                });
-                return 0;
-            }
-
-            // Parse event
-            match Self::parse_event_sync(data) {
-                Ok(event) => {
-                    tokio::spawn(async move {
-                        if let Err(_) = sender.send(event).await {
-                            // Channel full, update metrics
-                            let mut metrics_guard = metrics.write().await;
-                            metrics_guard.events_dropped += 1;
-                        } else {
-                            let mut metrics_guard = metrics.write().await;
-                            metrics_guard.events_processed += 1;
-                            metrics_guard.last_event_timestamp = Some(Instant::now());
-                        }
-                    });
+            rb_builder.add(&rb_map, {
+                let event_tx = event_tx.clone();
+                move |data: &[u8]| {
+                    // Copy data and send through channel for async processing
+                    if let Err(_) = event_tx.send(data.to_vec()) {
+                        // Channel closed, stop processing
+                        return -1;
+                    }
+                    0
                 }
-                Err(e) => {
-                    tokio::spawn(async move {
-                        let mut metrics_guard = metrics.write().await;
-                        metrics_guard.processing_errors += 1;
-                        debug!("Event parsing error: {}", e);
-                    });
-                }
-            }
-            0
-        });
+            });
 
-        let mut rb = match rb_builder.build() {
-            Ok(rb) => rb,
-            Err(e) => {
+            rb_builder.build()
+        }).await;
+
+        let rb = match rb_result {
+            Ok(Ok(rb)) => rb,
+            Ok(Err(e)) => {
                 error!("Cannot create ring buffer: {}", e);
+                return;
+            }
+            Err(e) => {
+                error!("Ring buffer task error: {}", e);
                 return;
             }
         };
 
-        info!("📡 Async ring buffer processor started");
+        // Spawn a blocking task for ring buffer polling
+        let poll_handle = tokio::task::spawn_blocking(move || {
+            loop {
+                match rb.poll(Duration::from_millis(100)) {
+                    Ok(()) => {
+                        // Events are handled through the callback
+                    }
+                    Err(e) => {
+                        error!("Ring buffer polling error: {}", e);
+                        break;
+                    }
+                }
+            }
+        });
 
-        let mut poll_interval = interval(Duration::from_millis(config.poll_timeout_ms));
+        info!("📡 Ring buffer processor started");
 
+        // Main event processing loop
         loop {
             tokio::select! {
-                _ = poll_interval.tick() => {
-                    // Use spawn_blocking to handle the synchronous poll operation
-                    // We need to use a different approach since RingBuffer doesn't support clone
-                    match tokio::task::spawn_blocking({
-                        // Move ownership temporarily using Option
-                        let timeout = Duration::from_millis(config.poll_timeout_ms);
-                        move || {
-                            // This is a workaround - we need to restructure to avoid cloning
-                            // For now, we'll use a shorter timeout in a different way
-                            std::thread::sleep(Duration::from_millis(10));
-                            Ok::<(), anyhow::Error>(())
-                        }
-                    }).await {
-                        Ok(Ok(())) => {
-                            // Poll the ring buffer directly without clone
-                            if let Err(e) = rb.poll(Duration::from_millis(1)) {
-                                error!("Ring buffer polling error: {}", e);
-                                if config.auto_recovery {
-                                    warn!("Attempting auto recovery...");
-                                    tokio::time::sleep(Duration::from_secs(1)).await;
-                                    continue;
-                                }
-                                break;
+                // Process events from ring buffer
+                Some(data) = event_rx.recv() => {
+                    // Rate limiting
+                    if rate_limiter.try_acquire().is_err() {
+                        let mut metrics_guard = metrics.write().await;
+                        metrics_guard.events_dropped += 1;
+                        continue;
+                    }
+
+                    // Parse and send event
+                    match Self::parse_event_sync(&data) {
+                        Ok(event) => {
+                            if let Err(_) = sender.send(event).await {
+                                // Channel full, update metrics
+                                let mut metrics_guard = metrics.write().await;
+                                metrics_guard.events_dropped += 1;
+                            } else {
+                                let mut metrics_guard = metrics.write().await;
+                                metrics_guard.events_processed += 1;
+                                metrics_guard.last_event_timestamp = Some(Instant::now());
                             }
-                        }
-                        Ok(Err(e)) => {
-                            error!("Ring buffer polling error: {}", e);
-                            if config.auto_recovery {
-                                warn!("Attempting auto recovery...");
-                                tokio::time::sleep(Duration::from_secs(1)).await;
-                                continue;
-                            }
-                            break;
                         }
                         Err(e) => {
-                            error!("Ring buffer task error: {}", e);
-                            break;
+                            let mut metrics_guard = metrics.write().await;
+                            metrics_guard.processing_errors += 1;
+                            debug!("Event parsing error: {}", e);
                         }
                     }
                 }
+                
+                // Handle shutdown
                 _ = shutdown.notified() => {
                     info!("Received shutdown signal, stopping ring buffer processor");
+                    break;
+                }
+                
+                // Check if polling task finished (error case)
+                _ = &mut poll_handle => {
+                    error!("Ring buffer polling task terminated unexpectedly");
+                    if config.auto_recovery {
+                        warn!("Auto recovery not implemented for polling task termination");
+                    }
                     break;
                 }
             }
@@ -647,7 +658,7 @@ impl EbpfLoader {
             _ => {
                 // Create error event
                 Ok(RawEvent::Error(EventError {
-                    timestamp: chrono::Utc::now().timestamp_nanos() as u64,
+                    timestamp: chrono::Utc::now().timestamp_nanos_opt().unwrap_or(0) as u64,
                     error_type: ErrorType::ParseError,
                     message: "Unknown event type".to_string(),
                     context: "parse_event_sync".to_string(),
