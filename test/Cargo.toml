@@ -1,0 +1,11 @@
+[package]
+name = "simple-ebpf-loader"
+version = "0.1.0"
+edition = "2021"
+
+# 排除此包从主workspace
+[workspace]
+
+[dependencies]
+libbpf-rs = "0.23"
+anyhow = "1.0"
