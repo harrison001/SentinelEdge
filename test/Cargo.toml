@@ -3,7 +3,7 @@ name = "simple-ebpf-loader"
 version = "0.1.0"
 edition = "2021"
 
-# 排除此包从主workspace
+# Exclude this package from main workspace
 [workspace]
 
 [dependencies]
