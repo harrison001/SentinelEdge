@@ -221,9 +221,6 @@ impl EbpfLoader {
             .map("events")
             .context("Cannot find ring buffer map")?;
 
-        // Clone the map for the processor
-        let rb_map_clone = rb_map.clone();
-
         // Create async ring buffer processor  
         let sender = self.event_sender.clone();
         let metrics = Arc::clone(&self.metrics);
@@ -231,9 +228,9 @@ impl EbpfLoader {
         let shutdown = Arc::clone(&self.shutdown_signal);
         let config = self.config.clone();
 
-        // Spawn the processor with cloned map
+        // Spawn the processor with the map (transfer ownership)
         tokio::spawn(Self::ring_buffer_processor(
-            rb_map_clone,
+            rb_map,
             sender,
             metrics,
             rate_limiter,
@@ -259,7 +256,7 @@ impl EbpfLoader {
         let (event_tx, mut event_rx) = mpsc::unbounded_channel::<Vec<u8>>();
         
         // Build ring buffer in a blocking context to avoid Send issues
-        let rb_result = tokio::task::spawn_blocking(move || -> Result<_> {
+        let rb_result = tokio::task::spawn_blocking(move || -> anyhow::Result<_> {
             let mut rb_builder = RingBufferBuilder::new();
             
             rb_builder.add(&rb_map, {
@@ -274,7 +271,7 @@ impl EbpfLoader {
                 }
             });
 
-            rb_builder.build()
+            rb_builder.build().map_err(|e| anyhow::anyhow!("Ring buffer build error: {}", e))
         }).await;
 
         let rb = match rb_result {
