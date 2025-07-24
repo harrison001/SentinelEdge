@@ -279,7 +279,7 @@ impl EbpfLoader {
         };
 
         // Spawn a blocking task for ring buffer polling
-        let poll_handle = tokio::task::spawn_blocking(move || {
+        let mut poll_handle = tokio::task::spawn_blocking(move || {
             loop {
                 match rb.poll(Duration::from_millis(100)) {
                     Ok(()) => {
