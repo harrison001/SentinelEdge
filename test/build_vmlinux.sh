@@ -1,7 +1,7 @@
 #!/bin/bash
 
-echo "🔧 Building Symbol-Matching vmlinux for Production Environment Debugging"
-echo "========================================================================"
+echo "[BUILD] Building Symbol-Matching vmlinux for Production Environment Debugging"
+echo "============================================================================"
 
 # Color definitions
 RED='\033[0;31m'
@@ -17,8 +17,8 @@ log_error() { echo -e "${RED}[ERROR]${NC} $1"; }
 
 # 1. Collect production environment information
 echo ""
-log_info "📋 Step 1: Collect Production Environment Information"
-echo "===================================================="
+log_info "[STEP] Step 1: Collect Production Environment Information"
+echo "========================================================"
 
 KERNEL_VERSION=$(uname -r)
 KERNEL_ARCH=$(uname -m)
@@ -60,8 +60,8 @@ fi
 
 # 2. Get kernel source code
 echo ""
-log_info "📦 Step 2: Get Kernel Source Code"
-echo "=================================="
+log_info "[STEP] Step 2: Get Kernel Source Code"
+echo "====================================="
 
 # Extract version numbers
 MAJOR_VERSION=$(echo $KERNEL_VERSION | cut -d. -f1)
@@ -101,8 +101,8 @@ cd "linux-${FULL_VERSION}"
 
 # 3. Configure kernel compilation
 echo ""
-log_info "⚙️  Step 3: Configure Kernel Compilation"
-echo "========================================"
+log_info "[STEP] Step 3: Configure Kernel Compilation"
+echo "==========================================="
 
 # Copy production configuration
 cp ../production.config .config
@@ -128,8 +128,8 @@ make oldconfig
 
 # 4. Compile vmlinux
 echo ""
-log_info "🔨 Step 4: Compile vmlinux"
-echo "=========================="
+log_info "[BUILD] Step 4: Compile vmlinux"
+echo "==============================="
 
 log_info "Starting compilation (this may take 20-60 minutes)..."
 log_info "Only compiling vmlinux, not modules to save time"
@@ -151,8 +151,8 @@ fi
 
 # 5. Verify symbol matching
 echo ""
-log_info "🔍 Step 5: Verify Symbol Matching"
-echo "================================="
+log_info "[VERIFY] Step 5: Verify Symbol Matching"
+echo "========================================"
 
 log_info "Creating symbol verification script..."
 cat > ../verify_symbols.py << 'EOF'
@@ -181,17 +181,17 @@ def get_vmlinux_symbols(vmlinux_path):
 
 def compare_symbols(vmlinux_path):
     """Compare key eBPF symbols"""
-    print("🔍 Comparing key eBPF symbol addresses...")
+    print("[INFO] Comparing key eBPF symbol addresses...")
     
     prod_syms = get_production_symbols()
     vmlinux_syms = get_vmlinux_symbols(vmlinux_path)
     
     if not prod_syms:
-        print("❌ Cannot read production environment symbol table")
+        print("[ERROR] Cannot read production environment symbol table")
         return False
         
     if not vmlinux_syms:
-        print("❌ Cannot read vmlinux symbol table")
+        print("[ERROR] Cannot read vmlinux symbol table")
         return False
     
     # Key eBPF functions
@@ -213,27 +213,27 @@ def compare_symbols(vmlinux_path):
             vmlinux_addr = vmlinux_match.group(1)
             
             if prod_addr == vmlinux_addr:
-                print(f"✅ {func:20} | 0x{prod_addr} (matched)")
+                print(f"[OK] {func:20} | 0x{prod_addr} (matched)")
                 matched += 1
             else:
-                print(f"❌ {func:20} | prod:0x{prod_addr} vmlinux:0x{vmlinux_addr} (mismatched)")
+                print(f"[FAIL] {func:20} | prod:0x{prod_addr} vmlinux:0x{vmlinux_addr} (mismatched)")
         elif prod_match:
-            print(f"⚠️  {func:20} | found only in production: 0x{prod_match.group(1)}")
+            print(f"[WARN] {func:20} | found only in production: 0x{prod_match.group(1)}")
         elif vmlinux_match:
-            print(f"⚠️  {func:20} | found only in vmlinux: 0x{vmlinux_match.group(1)}")
+            print(f"[WARN] {func:20} | found only in vmlinux: 0x{vmlinux_match.group(1)}")
         else:
-            print(f"❓ {func:20} | not found")
+            print(f"[MISS] {func:20} | not found")
     
-    print(f"\n📊 Matching statistics: {matched}/{total} ({matched/total*100:.1f}% matched)")
+    print(f"\n[RESULT] Matching statistics: {matched}/{total} ({matched/total*100:.1f}% matched)")
     
     if matched == total and total > 0:
-        print("🎉 All symbols perfectly matched! Can be used for static analysis")
+        print("[SUCCESS] All symbols perfectly matched! Can be used for static analysis")
         return True
     elif matched > 0:
-        print("⚠️  Partial symbol matching, limited analysis possible")
+        print("[WARN] Partial symbol matching, limited analysis possible")
         return True
     else:
-        print("❌ Symbols don't match, may be different kernel version or config")
+        print("[ERROR] Symbols don't match, may be different kernel version or config")
         return False
 
 if __name__ == "__main__":
@@ -251,11 +251,11 @@ python3 verify_symbols.py "linux-${FULL_VERSION}/vmlinux"
 
 # 6. Create usage guide
 echo ""
-log_info "📖 Step 6: Create Usage Guide"
-echo "============================="
+log_info "[GUIDE] Step 6: Create Usage Guide"
+echo "=================================="
 
 cat > debug_usage_guide.md << EOF
-# 🔍 Production Environment eBPF Debugging Usage Guide
+# Production Environment eBPF Debugging Usage Guide
 
 ## Compilation Results
 - vmlinux path: \`$(pwd)/linux-${FULL_VERSION}/vmlinux\`
@@ -293,33 +293,33 @@ python3 verify_symbols.py linux-${FULL_VERSION}/vmlinux
 \`\`\`
 
 ## Important Notes
-- ⚠️  This vmlinux is for static analysis only, cannot be used for live debugging
-- ⚠️  Symbol addresses must match exactly for accurate analysis  
-- ⚠️  Different compiler versions may produce different symbol addresses
-- ✅ Can be used to understand kernel code structure and eBPF implementation
-- ✅ Can analyze crash dumps and core files
+- WARNING: This vmlinux is for static analysis only, cannot be used for live debugging
+- WARNING: Symbol addresses must match exactly for accurate analysis  
+- WARNING: Different compiler versions may produce different symbol addresses
+- OK: Can be used to understand kernel code structure and eBPF implementation
+- OK: Can analyze crash dumps and core files
 EOF
 
 log_success "Usage guide saved to: debug_usage_guide.md"
 
 # 7. Summary
 echo ""
-log_info "🎯 Summary"
-echo "=========="
+log_info "[RESULT] Summary"
+echo "================"
 
 if [ -f "linux-${FULL_VERSION}/vmlinux" ]; then
-    log_success "✅ vmlinux compilation successful"
-    log_success "✅ Symbol verification script created"  
-    log_success "✅ Usage guide generated"
+    log_success "vmlinux compilation successful"
+    log_success "Symbol verification script created"  
+    log_success "Usage guide generated"
     
     echo ""
-    echo "📝 Next steps:"
+    echo "[NEXT] Next steps:"
     echo "1. Run symbol verification: python3 verify_symbols.py linux-${FULL_VERSION}/vmlinux"
     echo "2. Read usage guide: cat debug_usage_guide.md"
     echo "3. Start static analysis: gdb linux-${FULL_VERSION}/vmlinux"
     echo ""
-    echo "💡 Remember: This method provides static analysis capability, cannot replace true live kernel debugging"
+    echo "NOTE: This method provides static analysis capability, cannot replace true live kernel debugging"
 else
-    log_error "❌ vmlinux compilation failed"
+    log_error "vmlinux compilation failed"
     echo "Please check compilation errors and retry"
 fi 

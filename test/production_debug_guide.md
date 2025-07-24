@@ -1,6 +1,6 @@
-# 🏭 Production Environment Kernel Debugging Solutions
+# Production Environment Kernel Debugging Solutions
 
-## 🎯 **Core Problem Analysis**
+## Core Problem Analysis
 
 **Problem:** Production kernel does not have KGDB enabled, how to perform kernel-level eBPF debugging?
 
@@ -11,29 +11,29 @@
 
 ---
 
-## 📊 **Solution Feasibility Comparison**
+## Solution Feasibility Comparison
 
 | Solution | Feasibility | Risk | Debug Depth | Use Case |
 |----------|-------------|------|-------------|----------|
-| **Symbol File Matching** | ⚠️ Partially feasible | 🟢 Low | 🟡 Medium | Static analysis |
-| **Live Kernel Debugging** | ❌ Not feasible | 🔴 High | 🔴 None | KGDB required |
-| **Crash Dump Analysis** | ✅ Fully feasible | 🟢 Low | 🟢 High | Post-mortem analysis |
-| **Runtime Observation** | ✅ Fully feasible | 🟢 Low | 🟡 Medium | Real-time monitoring |
-| **QEMU Simulation** | ✅ Fully feasible | 🟢 Low | 🟢 High | Reproduction debugging |
+| **Symbol File Matching** | Partially feasible | Low | Medium | Static analysis |
+| **Live Kernel Debugging** | Not feasible | High | None | KGDB required |
+| **Crash Dump Analysis** | Fully feasible | Low | High | Post-mortem analysis |
+| **Runtime Observation** | Fully feasible | Low | Medium | Real-time monitoring |
+| **QEMU Simulation** | Fully feasible | Low | High | Reproduction debugging |
 
 ---
 
-## 🔍 **Solution 1: Symbol File Matching Debugging (Partially Feasible)**
+## Solution 1: Symbol File Matching Debugging (Partially Feasible)
 
 ### Feasibility Analysis
 ```bash
-# ✅ What can be achieved:
+# What can be achieved:
 - Obtain accurate symbol addresses
 - Analyze kernel data structures
 - Understand code logic and call relationships
 - Static analysis of eBPF program loading locations
 
-# ❌ What cannot be achieved:
+# What cannot be achieved:
 - Real-time breakpoint debugging (requires KGDB)
 - Single-step execution (requires debug support)
 - Modify memory contents
@@ -74,7 +74,7 @@ cat /proc/kallsyms | grep sys_bpf
 
 ---
 
-## 🔍 **Solution 2: Crash Dump Based Offline Debugging (Recommended)**
+## Solution 2: Crash Dump Based Offline Debugging (Recommended)
 
 ### Principle
 Even without KGDB in production kernel, crash dump can provide deep analysis:
@@ -102,7 +102,7 @@ crash> bt                         # View call stack
 
 ---
 
-## 🔍 **Solution 3: Runtime Observation Debugging (Most Practical)**
+## Solution 3: Runtime Observation Debugging (Most Practical)
 
 ### Based on Existing Kernel Features
 ```bash
@@ -157,7 +157,7 @@ char LICENSE[] SEC("license") = "GPL";
 
 ---
 
-## 🔍 **Solution 4: Complete QEMU Simulation Debugging**
+## Solution 4: Complete QEMU Simulation Debugging
 
 ### Build Identical Environment
 ```bash
@@ -179,7 +179,7 @@ qemu-system-x86_64 -kernel vmlinuz -initrd rootfs.cpio.gz \
 
 ---
 
-## 💡 **Production Environment Debugging Best Practices**
+## Production Environment Debugging Best Practices
 
 ### 1. Non-intrusive Monitoring
 ```bash
@@ -252,21 +252,21 @@ if __name__ == "__main__":
 
 ---
 
-## 🎯 **Conclusions and Recommendations**
+## Conclusions and Recommendations
 
-### ✅ **Feasible Solutions:**
+### Feasible Solutions:
 
 1. **Static Symbol Analysis** - Compile same version kernel to get vmlinux for code analysis
 2. **Runtime Observation** - Use ftrace, perf, bpftrace and other existing tools  
 3. **Crash Dump Analysis** - Post-mortem deep analysis
 4. **QEMU Simulation** - Complete environment reproduction for debugging
 
-### ❌ **Infeasible Solutions:**
+### Infeasible Solutions:
 
 1. **Real-time KGDB Debugging** - Must have kernel support, cannot bypass
 2. **Dynamic Breakpoints** - Requires debug interface support
 
-### 🚀 **Recommended Strategy:**
+### Recommended Strategy:
 
 ```bash
 # 1. Compile symbol-matching vmlinux (for static analysis)
@@ -275,4 +275,4 @@ if __name__ == "__main__":
 # 4. Collect crash dump if necessary (post-mortem analysis)
 ```
 
-**Summary: Although unable to perform live kernel debugging in production environment, deep eBPF debugging and problem localization can still be achieved through combined use of multiple solutions!** 🎯 
+**Summary: Although unable to perform live kernel debugging in production environment, deep eBPF debugging and problem localization can still be achieved through combined use of multiple solutions!** 
