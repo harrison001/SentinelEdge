@@ -228,9 +228,9 @@ impl EbpfLoader {
         let shutdown = Arc::clone(&self.shutdown_signal);
         let config = self.config.clone();
 
-        // Spawn the processor with the map reference
+        // Spawn the processor with owned map
         tokio::spawn(Self::ring_buffer_processor(
-            &rb_map,
+            rb_map,
             sender,
             metrics,
             rate_limiter,
@@ -243,7 +243,7 @@ impl EbpfLoader {
 
     #[cfg(target_os = "linux")]
     async fn ring_buffer_processor(
-        rb_map: &libbpf_rs::Map,
+        rb_map: libbpf_rs::Map,
         sender: mpsc::Sender<RawEvent>,
         metrics: Arc<RwLock<EbpfMetrics>>,
         rate_limiter: Arc<Semaphore>,
@@ -255,25 +255,33 @@ impl EbpfLoader {
         // Create a channel for events from the ring buffer callback
         let (event_tx, mut event_rx) = mpsc::unbounded_channel::<Vec<u8>>();
         
-        // Build ring buffer synchronously since Map doesn't implement Send
-        let mut rb_builder = RingBufferBuilder::new();
-        
-        rb_builder.add(rb_map, {
-            let event_tx = event_tx.clone();
-            move |data: &[u8]| {
-                // Copy data and send through channel for async processing
-                if let Err(_) = event_tx.send(data.to_vec()) {
-                    // Channel closed, stop processing
-                    return -1;
+        // Build ring buffer in a blocking context to avoid Send issues
+        let rb_result = tokio::task::spawn_blocking(move || -> anyhow::Result<_> {
+            let mut rb_builder = RingBufferBuilder::new();
+            
+            rb_builder.add(&rb_map, {
+                let event_tx = event_tx.clone();
+                move |data: &[u8]| {
+                    // Copy data and send through channel for async processing
+                    if let Err(_) = event_tx.send(data.to_vec()) {
+                        // Channel closed, stop processing
+                        return -1;
+                    }
+                    0
                 }
-                0
-            }
-        });
+            });
 
-        let rb = match rb_builder.build() {
-            Ok(rb) => rb,
-            Err(e) => {
+            rb_builder.build().map_err(|e| anyhow::anyhow!("Ring buffer build error: {}", e))
+        }).await;
+
+        let rb = match rb_result {
+            Ok(Ok(rb)) => rb,
+            Ok(Err(e)) => {
                 error!("Cannot create ring buffer: {}", e);
+                return;
+            }
+            Err(e) => {
+                error!("Ring buffer task error: {}", e);
                 return;
             }
         };
