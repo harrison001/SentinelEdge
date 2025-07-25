@@ -81,6 +81,7 @@ mod real_integration_tests {
             batch_timeout_us: Some(500),
         };
 
+        let config_clone = config.clone();
         let loader = EbpfLoader::with_config(config);
         let event_count = Arc::new(AtomicU64::new(0));
         
@@ -99,7 +100,7 @@ mod real_integration_tests {
             metrics.clone(),
             rate_limiter,
             processor_shutdown,
-            config,
+            config_clone,
         ));
 
         // Generate real system activity to trigger events
@@ -178,9 +179,26 @@ mod real_integration_tests {
         
         // Check event authenticity
         if let Some(first_event) = collected_events.first() {
-            assert!(first_event.pid > 0, "Invalid PID in captured event");
-            assert!(first_event.timestamp > 0, "Invalid timestamp in captured event");
-            println!("✅ Event data validation passed");
+            match first_event {
+                RawEvent::Exec(exec_event) => {
+                    assert!(exec_event.pid > 0, "Invalid PID in captured event");
+                    assert!(exec_event.timestamp > 0, "Invalid timestamp in captured event");
+                    println!("✅ Event data validation passed");
+                },
+                RawEvent::NetConn(net_event) => {
+                    assert!(net_event.pid > 0, "Invalid PID in captured event");
+                    assert!(net_event.timestamp > 0, "Invalid timestamp in captured event");
+                    println!("✅ Event data validation passed");
+                },
+                RawEvent::FileOp(file_event) => {
+                    assert!(file_event.pid > 0, "Invalid PID in captured event");
+                    assert!(file_event.timestamp > 0, "Invalid timestamp in captured event");
+                    println!("✅ Event data validation passed");
+                },
+                _ => {
+                    println!("✅ Event received (other type)");
+                }
+            }
         }
 
         let final_metrics = metrics.read().await;
