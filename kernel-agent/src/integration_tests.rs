@@ -6,8 +6,11 @@ mod integration_tests {
     use super::*;
     use crate::error::*;
     use crate::events::*;
+    use crate::{EbpfConfig, EbpfLoader, RawEvent};
+    use std::sync::Arc;
     use std::time::Duration;
     use tokio::time::timeout;
+    use tokio_stream::StreamExt;
     use tracing_subscriber;
 
     /// Test configuration for integration tests
@@ -45,7 +48,7 @@ mod integration_tests {
         assert!(result.is_ok(), "Initialization failed: {:?}", result);
 
         // Test event stream
-        let mut event_stream = loader.event_stream().await.unwrap();
+        let mut event_stream = loader.event_stream().await;
         
         // Set a timeout to avoid hanging
         let events = timeout(Duration::from_secs(2), async {
@@ -80,7 +83,7 @@ mod integration_tests {
         }
 
         // Test graceful shutdown
-        loader.shutdown().await.expect("Shutdown failed");
+        loader.shutdown().await;
     }
 
     #[tokio::test]
@@ -95,7 +98,7 @@ mod integration_tests {
         loader.initialize().await.expect("Initialization failed");
 
         // Test rate limiting and backpressure
-        let mut event_stream = loader.event_stream().await.unwrap();
+        let mut event_stream = loader.event_stream().await;
         
         // Rapidly consume events to test rate limiting
         let start_time = std::time::Instant::now();
@@ -116,7 +119,7 @@ mod integration_tests {
         assert!(elapsed >= Duration::from_millis(500), 
             "Rate limiting doesn't seem to be working: elapsed {:?}", elapsed);
 
-        loader.shutdown().await.expect("Shutdown failed");
+        loader.shutdown().await;
     }
 
     #[tokio::test]
@@ -145,8 +148,7 @@ mod integration_tests {
             match loader.initialize().await {
                 Ok(_) => {
                     // If it succeeds, ensure it's in a valid state
-                    let metrics = loader.get_metrics().await;
-                    assert!(metrics.is_ok());
+                    let _metrics = loader.get_metrics().await;
                 }
                 Err(e) => {
                     // Expected failure for invalid config
@@ -166,7 +168,7 @@ mod integration_tests {
         // Let it run for a bit to collect metrics
         tokio::time::sleep(Duration::from_millis(500)).await;
 
-        let metrics = loader.get_metrics().await.expect("Failed to get metrics");
+        let metrics = loader.get_metrics().await;
         
         // Basic metric validation
         assert!(metrics.uptime_seconds > 0, "Uptime should be positive");
@@ -174,7 +176,7 @@ mod integration_tests {
         
         println!("Collected metrics: {:?}", metrics);
         
-        loader.shutdown().await.expect("Shutdown failed");
+        loader.shutdown().await;
     }
 
     #[tokio::test]
@@ -202,7 +204,7 @@ mod integration_tests {
             assert!(result.is_ok(), "Concurrent task failed: {:?}", result);
         }
 
-        loader.shutdown().await.expect("Shutdown failed");
+        loader.shutdown().await;
     }
 
     #[tokio::test]
@@ -218,13 +220,13 @@ mod integration_tests {
         loader.initialize().await.expect("Initialization failed");
 
         // Create memory pressure by not consuming events
-        let _event_stream = loader.event_stream().await.unwrap();
+        let _event_stream = loader.event_stream().await;
         
         // Let it run to potentially fill buffers
         tokio::time::sleep(Duration::from_millis(200)).await;
 
         // System should remain stable
-        let metrics = loader.get_metrics().await.expect("System should remain responsive under memory pressure");
+        let metrics = loader.get_metrics().await;
         
         // Check if backpressure mechanisms kicked in
         if metrics.ring_buffer_full_count > 0 {
@@ -232,7 +234,7 @@ mod integration_tests {
                 metrics.ring_buffer_full_count);
         }
 
-        loader.shutdown().await.expect("Shutdown failed");
+        loader.shutdown().await;
     }
 
     #[tokio::test]
@@ -242,7 +244,7 @@ mod integration_tests {
         let mut loader = EbpfLoader::with_config(test_config());
         loader.initialize().await.expect("Initialization failed");
 
-        let mut event_stream = loader.event_stream().await.unwrap();
+        let mut event_stream = loader.event_stream().await;
         
         // Look for error events (they might be generated in mock mode)
         let result = timeout(Duration::from_secs(1), async {
@@ -268,7 +270,7 @@ mod integration_tests {
             }
         }
 
-        loader.shutdown().await.expect("Shutdown failed");
+        loader.shutdown().await;
     }
 
     #[tokio::test]
@@ -278,7 +280,7 @@ mod integration_tests {
         let mut loader = EbpfLoader::with_config(test_config());
         loader.initialize().await.expect("Initialization failed");
 
-        let event_stream = loader.event_stream().await.unwrap();
+        let event_stream = loader.event_stream().await;
         
         // Start consuming events in a separate task
         let consume_handle = tokio::spawn(async move {
@@ -296,7 +298,7 @@ mod integration_tests {
 
         // Trigger shutdown
         let shutdown_start = std::time::Instant::now();
-        loader.shutdown().await.expect("Shutdown failed");
+        loader.shutdown().await;
         let shutdown_duration = shutdown_start.elapsed();
 
         // Shutdown should be reasonably fast
@@ -320,7 +322,7 @@ mod integration_tests {
 
         loader.initialize().await.expect("Initialization failed");
 
-        let mut event_stream = loader.event_stream().await.unwrap();
+        let mut event_stream = loader.event_stream().await;
         
         // Consume events slowly to test backpressure
         let mut events_received = 0;
@@ -343,11 +345,11 @@ mod integration_tests {
         assert!(events_received > 0, "Should have received some events");
         
         // With backpressure, the system should remain stable
-        let metrics = loader.get_metrics().await.expect("Should get metrics after backpressure test");
+        let metrics = loader.get_metrics().await;
         println!("Metrics after backpressure test: processed={}, dropped={}", 
             metrics.events_processed, metrics.events_dropped);
 
-        loader.shutdown().await.expect("Shutdown failed");
+        loader.shutdown().await;
     }
 }
 
@@ -355,6 +357,10 @@ mod integration_tests {
 #[cfg(test)]
 mod linux_specific_tests {
     use super::*;
+    use crate::{EbpfConfig, EbpfLoader, RawEvent};
+    use std::time::Duration;
+    use tokio::time::timeout;
+    use tokio_stream::StreamExt;
 
     #[tokio::test]
     #[ignore = "Requires root privileges and Linux environment"]
@@ -370,7 +376,7 @@ mod linux_specific_tests {
                 println!("✅ Real eBPF program loaded successfully");
                 
                 // Test real event collection
-                let mut event_stream = loader.event_stream().await.unwrap();
+                let mut event_stream = loader.event_stream().await;
                 let mut real_events = 0;
                 
                 let events = timeout(Duration::from_secs(5), async {
@@ -390,7 +396,7 @@ mod linux_specific_tests {
                 assert!(events.is_ok(), "Should collect real events");
                 println!("✅ Collected {} real kernel events", real_events);
                 
-                loader.shutdown().await.expect("Shutdown failed");
+                loader.shutdown().await;
             }
             Err(e) => {
                 println!("⚠️ eBPF loading failed (expected without root): {:?}", e);
@@ -411,7 +417,7 @@ mod linux_specific_tests {
 
         loader.initialize().await.expect("Initialization failed");
 
-        let mut event_stream = loader.event_stream().await.unwrap();
+        let mut event_stream = loader.event_stream().await;
         let start_time = std::time::Instant::now();
         let mut event_count = 0;
 
@@ -435,6 +441,6 @@ mod linux_specific_tests {
         // Performance assertions (adjust based on expected performance)
         assert!(events_per_sec > 100.0, "Should process at least 100 events/sec");
         
-        loader.shutdown().await.expect("Shutdown failed");
+        loader.shutdown().await;
     }
 }
