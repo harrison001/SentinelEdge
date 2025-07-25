@@ -350,9 +350,36 @@ impl EbpfLoader {
 
     #[cfg(target_os = "linux")]
     async fn initialize_linux(&self) -> Result<Object> {
-        let mut object = ObjectBuilder::default()
-            .open_file("kernel-agent/src/sentinel.bpf.o")
-            .context("Cannot open eBPF object file")?
+        // Try multiple possible paths for the eBPF object file
+        let possible_paths = [
+            "src/sentinel.bpf.o",                    // When running from kernel-agent directory
+            "kernel-agent/src/sentinel.bpf.o",      // When running from project root
+            "./src/sentinel.bpf.o",                 // Explicit relative path
+            "./kernel-agent/src/sentinel.bpf.o",    // Explicit relative path from root
+        ];
+        
+        let mut object_builder = None;
+        let mut last_error = None;
+        
+        for path in &possible_paths {
+            match ObjectBuilder::default().open_file(path) {
+                Ok(builder) => {
+                    debug!("Successfully found eBPF object at: {}", path);
+                    object_builder = Some(builder);
+                    break;
+                }
+                Err(e) => {
+                    debug!("Failed to open eBPF object at {}: {}", path, e);
+                    last_error = Some(e);
+                }
+            }
+        }
+        
+        let mut object = object_builder
+            .ok_or_else(|| {
+                anyhow::anyhow!("Cannot find eBPF object file at any of the expected paths: {:?}. Last error: {:?}", 
+                    possible_paths, last_error)
+            })?
             .load()
             .context("Cannot load eBPF program")?;
 

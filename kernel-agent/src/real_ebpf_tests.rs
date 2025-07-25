@@ -147,9 +147,27 @@ impl RealEbpfTester {
                 source: e
             })?;
 
-        // Use correct relative path from current working directory
-        println!("✅ Using working eBPF object: src/sentinel.bpf.o");
-        let bpf_object_path = "src/sentinel.bpf.o";
+        // Try multiple possible paths for the eBPF object file
+        let possible_paths = [
+            "src/sentinel.bpf.o",                    // When running from kernel-agent directory
+            "kernel-agent/src/sentinel.bpf.o",      // When running from project root
+            "./src/sentinel.bpf.o",                 // Explicit relative path
+            "./kernel-agent/src/sentinel.bpf.o",    // Explicit relative path from root
+        ];
+        
+        let mut bpf_object_path = None;
+        for path in &possible_paths {
+            if std::path::Path::new(path).exists() {
+                println!("✅ Using working eBPF object: {}", path);
+                bpf_object_path = Some(path);
+                break;
+            }
+        }
+        
+        let bpf_object_path = bpf_object_path
+            .ok_or_else(|| crate::error::SentinelError::EbpfLoad(
+                format!("Cannot find eBPF object file at any of the expected paths: {:?}", possible_paths)
+            ))?;
         
         let compile_output = std::process::Output {
             status: std::process::ExitStatus::from_raw(0),
