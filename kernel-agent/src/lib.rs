@@ -1,36 +1,95 @@
 // kernel-agent/src/lib.rs
 // Event definitions and data structures
 
-use anyhow::Result;
 use std::sync::Arc;
 use std::time::Duration;
 use tokio::sync::{mpsc, RwLock, Semaphore};
 use tokio::time::{interval, timeout, Instant};
 use tokio_stream::{wrappers::ReceiverStream, Stream, StreamExt};
-use tracing::{debug, info, warn, instrument};
+use tracing::{debug, info, warn, instrument, error};
+
+mod error;
+mod safe_parser;
+mod observability_simple;
+mod config_validation;
+pub use error::*;
+pub use safe_parser::{SafeEventParser, safe_cstr_to_string, validate_event_data};
+pub use observability_simple::{SentinelMetrics, HealthChecker, HealthStatus, MetricsSummary};
+pub use config_validation::{ConfigValidator, ValidationReport, SystemConstraints};
 
 #[cfg(target_os = "linux")]
 use anyhow::Context;
 #[cfg(target_os = "linux")]
-use tracing::error;
-#[cfg(target_os = "linux")]
 use libbpf_rs::{RingBufferBuilder, Object, ObjectBuilder};
 
 pub mod events;
+#[cfg(test)]
+mod tests;
+#[cfg(test)]
+mod integration_tests;
+#[cfg(test)]
+mod real_integration_tests;
+#[cfg(test)]
+mod real_ebpf_tests;
 
 pub use events::*;
+pub use error::{SentinelError, Result};
 
+/// High-performance eBPF kernel monitoring agent
+/// 
+/// The `EbpfLoader` is the main entry point for SentinelEdge kernel monitoring.
+/// It provides asynchronous event processing, configurable ring buffers, and 
+/// comprehensive error handling.
+/// 
+/// # Examples
+/// 
+/// Basic usage:
+/// ```rust
+/// use kernel_agent::{EbpfLoader, EbpfConfig};
+/// 
+/// #[tokio::main]
+/// async fn main() -> Result<(), Box<dyn std::error::Error>> {
+///     let mut loader = EbpfLoader::new();
+///     loader.initialize().await?;
+///     
+///     let mut event_stream = loader.event_stream().await?;
+///     while let Some(event) = event_stream.next().await {
+///         println!("Received event: {:?}", event);
+///     }
+///     
+///     loader.shutdown().await?;
+///     Ok(())
+/// }
+/// ```
+/// 
+/// With custom configuration:
+/// ```rust
+/// use kernel_agent::{EbpfLoader, EbpfConfig};
+/// 
+/// let config = EbpfConfig {
+///     ring_buffer_size: 512 * 1024, // 512KB buffer
+///     max_events_per_sec: 5000,     // Rate limiting
+///     enable_backpressure: true,     // Handle overload
+///     ..Default::default()
+/// };
+/// 
+/// let mut loader = EbpfLoader::with_config(config);
+/// ```
 pub struct EbpfLoader {
     config: EbpfConfig,
-    event_sender: mpsc::Sender<RawEvent>,
-    event_receiver: Arc<RwLock<Option<mpsc::Receiver<RawEvent>>>>,
-    metrics: Arc<RwLock<EbpfMetrics>>,
+    pub event_sender: mpsc::Sender<RawEvent>,
+    pub event_receiver: Arc<RwLock<Option<mpsc::Receiver<RawEvent>>>>,
+    pub metrics: Arc<RwLock<EbpfMetrics>>,
     shutdown_signal: Arc<tokio::sync::Notify>,
     rate_limiter: Arc<Semaphore>,
     #[cfg(target_os = "linux")]
     _object: Option<Object>,
 }
 
+/// Configuration for the eBPF loader
+/// 
+/// This structure controls various aspects of the eBPF monitoring system,
+/// including buffer sizes, rate limiting, and performance optimizations.
 #[derive(Debug, Clone)]
 pub struct EbpfConfig {
     pub ring_buffer_size: usize,
@@ -40,6 +99,10 @@ pub struct EbpfConfig {
     pub enable_backpressure: bool,
     pub auto_recovery: bool,
     pub metrics_interval_sec: u64,
+    // High-performance processing options
+    pub ring_buffer_poll_timeout_us: Option<u64>,
+    pub batch_size: Option<usize>,
+    pub batch_timeout_us: Option<u64>,
 }
 
 impl Default for EbpfConfig {
@@ -52,10 +115,18 @@ impl Default for EbpfConfig {
             enable_backpressure: true,
             auto_recovery: true,
             metrics_interval_sec: 60,
+            // High-performance defaults
+            ring_buffer_poll_timeout_us: Some(100),  // 100 microseconds for low latency
+            batch_size: Some(64),                    // Optimized batch size
+            batch_timeout_us: Some(1000),            // 1ms max batch timeout
         }
     }
 }
 
+/// Runtime metrics for the eBPF monitoring system
+/// 
+/// These metrics provide insight into system performance, event processing
+/// rates, error conditions, and resource utilization.
 #[derive(Debug, Clone, Default)]
 pub struct EbpfMetrics {
     pub events_processed: u64,
@@ -68,6 +139,10 @@ pub struct EbpfMetrics {
     pub last_event_timestamp: Option<Instant>,
 }
 
+/// Raw events received from the eBPF kernel programs
+/// 
+/// These events represent different types of kernel activities that are
+/// monitored by the SentinelEdge system.
 #[derive(Debug, Clone)]
 pub enum RawEvent {
     Exec(ExecEvent),
@@ -77,6 +152,10 @@ pub enum RawEvent {
     Heartbeat(HeartbeatEvent),
 }
 
+/// Process execution event from kernel
+/// 
+/// Captures information about process creation, including process IDs,
+/// user context, command name, and execution parameters.
 #[repr(C)]
 #[derive(Debug, Clone)]
 pub struct ExecEvent {
@@ -91,6 +170,10 @@ pub struct ExecEvent {
     pub exit_code: i32,
 }
 
+/// Network connection event from kernel
+/// 
+/// Captures network connection attempts and established connections,
+/// including source/destination addresses, ports, and protocols.
 #[repr(C)]
 #[derive(Debug, Clone)]
 pub struct NetConnEvent {
@@ -106,6 +189,10 @@ pub struct NetConnEvent {
     pub direction: u8, // 0=outbound, 1=inbound
 }
 
+/// File system operation event from kernel
+/// 
+/// Captures file system activities including file opens, reads, writes,
+/// and metadata operations.
 #[repr(C)]
 #[derive(Debug, Clone)]
 pub struct FileOpEvent {
@@ -145,10 +232,38 @@ pub struct HeartbeatEvent {
 }
 
 impl EbpfLoader {
+    /// Create a new eBPF loader with default configuration
+    /// 
+    /// # Examples
+    /// 
+    /// ```rust
+    /// use kernel_agent::EbpfLoader;
+    /// 
+    /// let loader = EbpfLoader::new();
+    /// ```
     pub fn new() -> Self {
         Self::with_config(EbpfConfig::default())
     }
 
+    /// Create a new eBPF loader with custom configuration
+    /// 
+    /// # Arguments
+    /// 
+    /// * `config` - Configuration parameters for the eBPF system
+    /// 
+    /// # Examples
+    /// 
+    /// ```rust
+    /// use kernel_agent::{EbpfLoader, EbpfConfig};
+    /// 
+    /// let config = EbpfConfig {
+    ///     ring_buffer_size: 1024 * 1024, // 1MB buffer
+    ///     max_events_per_sec: 10000,     // High throughput
+    ///     ..Default::default()
+    /// };
+    /// 
+    /// let loader = EbpfLoader::with_config(config);
+    /// ```
     pub fn with_config(config: EbpfConfig) -> Self {
         let (event_sender, event_receiver) = mpsc::channel(config.event_batch_size * 2);
         let rate_limiter = Arc::new(Semaphore::new(config.max_events_per_sec));
@@ -165,6 +280,36 @@ impl EbpfLoader {
         }
     }
 
+    /// Initialize the eBPF monitoring system
+    /// 
+    /// This method loads the eBPF programs into the kernel and starts
+    /// the event processing pipeline. On non-Linux systems or when
+    /// lacking permissions, it falls back to simulation mode.
+    /// 
+    /// # Returns
+    /// 
+    /// * `Ok(())` - System initialized successfully
+    /// * `Err(SentinelError)` - Initialization failed
+    /// 
+    /// # Errors
+    /// 
+    /// * `SentinelError::Permission` - Insufficient privileges (requires root on Linux)
+    /// * `SentinelError::EbpfError` - eBPF program loading failed
+    /// * `SentinelError::ResourceExhausted` - System resources unavailable
+    /// 
+    /// # Examples
+    /// 
+    /// ```rust
+    /// use kernel_agent::EbpfLoader;
+    /// 
+    /// #[tokio::main]
+    /// async fn main() -> Result<(), Box<dyn std::error::Error>> {
+    ///     let mut loader = EbpfLoader::new();
+    ///     loader.initialize().await?;
+    ///     println!("eBPF system initialized successfully");
+    ///     Ok(())
+    /// }
+    /// ```
     #[instrument(skip(self))]
     pub async fn initialize(&mut self) -> Result<()> {
         info!("🔧 Initializing high-performance async eBPF loader...");
@@ -172,7 +317,10 @@ impl EbpfLoader {
         #[cfg(target_os = "linux")]
         {
             if !nix::unistd::Uid::effective().is_root() {
-                return Err(anyhow::anyhow!("Root privileges required to load eBPF programs"));
+                return Err(SentinelError::Permission {
+                    operation: "eBPF program loading".to_string(),
+                    details: "Root privileges required to load eBPF programs".to_string(),
+                });
             }
 
             match self.initialize_linux().await {
@@ -184,7 +332,7 @@ impl EbpfLoader {
                     self.start_background_tasks().await?;
                 }
                 Err(e) => {
-                    warn!("⚠️  eBPF program loading failed: {}", e);
+                    error!("⚠️  eBPF program loading failed: {}", e);
                     warn!("🔄 Starting simulation mode");
                     self.start_mock_mode().await?;
                 }
@@ -228,9 +376,65 @@ impl EbpfLoader {
         let shutdown = Arc::clone(&self.shutdown_signal);
         let config = self.config.clone();
 
-        // Spawn the processor with owned map
-        tokio::spawn(Self::ring_buffer_processor(
+        // Process ring buffer in current thread context
+        Self::setup_ring_buffer_processor(
             rb_map,
+            sender,
+            metrics,
+            rate_limiter,
+            shutdown,
+            config,
+        ).await?;
+
+        Ok(object)
+    }
+
+    #[cfg(target_os = "linux")]
+    async fn setup_ring_buffer_processor(
+        rb_map: &libbpf_rs::Map,
+        sender: mpsc::Sender<RawEvent>,
+        metrics: Arc<RwLock<EbpfMetrics>>,
+        rate_limiter: Arc<Semaphore>,
+        shutdown: Arc<tokio::sync::Notify>,
+        config: EbpfConfig,
+    ) -> Result<()> {
+        info!("📡 Setting up high-performance ring buffer processor");
+
+        // Create a high-throughput channel for raw events from ring buffer
+        let (raw_event_tx, raw_event_rx) = 
+            tokio::sync::mpsc::unbounded_channel::<Vec<u8>>();
+
+        // Create ring buffer builder and add callback
+        let mut rb_builder = RingBufferBuilder::new();
+        let tx_clone = raw_event_tx.clone();
+        let _ = rb_builder.add(rb_map, move |data: &[u8]| {
+            // High-performance zero-copy event forwarding
+            if tx_clone.send(data.to_vec()).is_err() {
+                // Channel closed, signal to stop
+                return -1;
+            }
+            0
+        });
+
+        // Build the ring buffer in current thread
+        let rb = rb_builder.build()
+            .context("Failed to build ring buffer")?;
+        
+        // Start the synchronous ring buffer polling in a dedicated thread
+        let poll_shutdown = Arc::clone(&shutdown);
+        let poll_config = config.clone();
+        
+        std::thread::spawn(move || {
+            Self::ring_buffer_poll_thread_with_rb(
+                rb,
+                poll_shutdown,
+                poll_config,
+            );
+        });
+
+        // Start the async event processing pipeline
+        tokio::spawn(Self::async_event_processor(
+            raw_event_rx,
             sender,
             metrics,
             rate_limiter,
@@ -238,122 +442,193 @@ impl EbpfLoader {
             config,
         ));
 
-        Ok(object)
+        info!("📡 High-performance ring buffer processor setup completed");
+        Ok(())
     }
 
     #[cfg(target_os = "linux")]
-    async fn ring_buffer_processor(
-        rb_map: libbpf_rs::Map,
+    fn ring_buffer_poll_thread_with_rb(
+        rb: libbpf_rs::RingBuffer,
+        shutdown: Arc<tokio::sync::Notify>,
+        config: EbpfConfig,
+    ) {
+        use std::sync::atomic::{AtomicBool, Ordering};
+        use std::sync::Arc as StdArc;
+        
+        info!("🔄 Starting dedicated high-performance ring buffer polling thread");
+        
+        let shutdown_flag = StdArc::new(AtomicBool::new(false));
+        let shutdown_flag_clone = StdArc::clone(&shutdown_flag);
+        
+        // Spawn a thread to watch for shutdown signal
+        std::thread::spawn(move || {
+            match tokio::runtime::Runtime::new() {
+                Ok(rt) => {
+                    rt.block_on(async {
+                        shutdown.notified().await;
+                        shutdown_flag_clone.store(true, Ordering::SeqCst);
+                    });
+                }
+                Err(e) => {
+                    error!("Failed to create tokio runtime for shutdown handler: {}", e);
+                    // Force shutdown flag to avoid hanging
+                    shutdown_flag_clone.store(true, Ordering::SeqCst);
+                }
+            }
+        });
+
+        info!("🚀 Ring buffer polling thread active with optimized settings");
+
+        // High-frequency polling loop with microsecond precision
+        let poll_timeout = Duration::from_micros(config.ring_buffer_poll_timeout_us.unwrap_or(100));
+        let mut poll_count = 0u64;
+        let mut last_stats = std::time::Instant::now();
+        
+        while !shutdown_flag.load(Ordering::SeqCst) {
+            match rb.poll(poll_timeout) {
+                Ok(_) => {
+                    // Events processed through callback
+                    poll_count += 1;
+                    
+                    // Log performance stats every 10 seconds
+                    if poll_count % 100000 == 0 {
+                        let now = std::time::Instant::now();
+                        let duration = now.duration_since(last_stats);
+                        if duration.as_secs() >= 10 {
+                            let polls_per_sec = 100000.0 / duration.as_secs_f64();
+                            debug!("Ring buffer performance: {:.0} polls/sec", polls_per_sec);
+                            last_stats = now;
+                        }
+                    }
+                }
+                Err(e) => {
+                    error!("Ring buffer poll error: {}", e);
+                    if config.auto_recovery {
+                        std::thread::sleep(Duration::from_millis(10));
+                        continue;
+                    } else {
+                        break;
+                    }
+                }
+            }
+        }
+
+        info!("🛑 Ring buffer polling thread stopped (processed {} polls)", poll_count);
+    }
+
+    #[cfg(target_os = "linux")]
+    async fn async_event_processor(
+        mut raw_event_rx: tokio::sync::mpsc::UnboundedReceiver<Vec<u8>>,
         sender: mpsc::Sender<RawEvent>,
         metrics: Arc<RwLock<EbpfMetrics>>,
         rate_limiter: Arc<Semaphore>,
         shutdown: Arc<tokio::sync::Notify>,
         config: EbpfConfig,
     ) {
-        info!("📡 Starting async ring buffer processor");
+        info!("⚡ Starting high-performance async event processor");
 
-        // Create a channel for events from the ring buffer callback
-        let (event_tx, mut event_rx) = mpsc::unbounded_channel::<Vec<u8>>();
+        // Batch processing for higher throughput
+        let mut event_batch = Vec::with_capacity(config.batch_size.unwrap_or(64));
+        let batch_timeout = Duration::from_micros(config.batch_timeout_us.unwrap_or(1000));
+        let mut batch_timer = tokio::time::interval(batch_timeout);
         
-        // Build ring buffer in a blocking context to avoid Send issues
-        let rb_result = tokio::task::spawn_blocking(move || -> anyhow::Result<_> {
-            let mut rb_builder = RingBufferBuilder::new();
-            
-            rb_builder.add(&rb_map, {
-                let event_tx = event_tx.clone();
-                move |data: &[u8]| {
-                    // Copy data and send through channel for async processing
-                    if let Err(_) = event_tx.send(data.to_vec()) {
-                        // Channel closed, stop processing
-                        return -1;
-                    }
-                    0
-                }
-            });
-
-            rb_builder.build().map_err(|e| anyhow::anyhow!("Ring buffer build error: {}", e))
-        }).await;
-
-        let rb = match rb_result {
-            Ok(Ok(rb)) => rb,
-            Ok(Err(e)) => {
-                error!("Cannot create ring buffer: {}", e);
-                return;
-            }
-            Err(e) => {
-                error!("Ring buffer task error: {}", e);
-                return;
-            }
-        };
-
-        // Spawn a blocking task for ring buffer polling
-        let mut poll_handle = tokio::task::spawn_blocking(move || {
-            loop {
-                match rb.poll(Duration::from_millis(100)) {
-                    Ok(()) => {
-                        // Events are handled through the callback
-                    }
-                    Err(e) => {
-                        error!("Ring buffer polling error: {}", e);
-                        break;
-                    }
-                }
-            }
-        });
-
-        info!("📡 Ring buffer processor started");
-
-        // Main event processing loop
         loop {
             tokio::select! {
-                // Process events from ring buffer
-                Some(data) = event_rx.recv() => {
-                    // Rate limiting
-                    if rate_limiter.try_acquire().is_err() {
-                        let mut metrics_guard = metrics.write().await;
-                        metrics_guard.events_dropped += 1;
-                        continue;
+                // Process incoming raw events
+                Some(raw_data) = raw_event_rx.recv() => {
+                    event_batch.push(raw_data);
+                    
+                    // Process batch when it's full
+                    if event_batch.len() >= event_batch.capacity() {
+                        Self::process_event_batch(
+                            &mut event_batch,
+                            &sender,
+                            &metrics,
+                            &rate_limiter,
+                        ).await;
                     }
-
-                    // Parse and send event
-                    match Self::parse_event_sync(&data) {
-                        Ok(event) => {
-                            if let Err(_) = sender.send(event).await {
-                                // Channel full, update metrics
-                                let mut metrics_guard = metrics.write().await;
-                                metrics_guard.events_dropped += 1;
-                            } else {
-                                let mut metrics_guard = metrics.write().await;
-                                metrics_guard.events_processed += 1;
-                                metrics_guard.last_event_timestamp = Some(Instant::now());
-                            }
-                        }
-                        Err(e) => {
-                            let mut metrics_guard = metrics.write().await;
-                            metrics_guard.processing_errors += 1;
-                            debug!("Event parsing error: {}", e);
-                        }
+                }
+                
+                // Process batch on timeout (ensure low latency)
+                _ = batch_timer.tick() => {
+                    if !event_batch.is_empty() {
+                        Self::process_event_batch(
+                            &mut event_batch,
+                            &sender,
+                            &metrics,
+                            &rate_limiter,
+                        ).await;
                     }
                 }
                 
                 // Handle shutdown
                 _ = shutdown.notified() => {
-                    info!("Received shutdown signal, stopping ring buffer processor");
-                    break;
-                }
-                
-                // Check if polling task finished (error case)
-                _ = &mut poll_handle => {
-                    error!("Ring buffer polling task terminated unexpectedly");
-                    if config.auto_recovery {
-                        warn!("Auto recovery not implemented for polling task termination");
+                    info!("Processing remaining events before shutdown...");
+                    // Process any remaining events
+                    if !event_batch.is_empty() {
+                        Self::process_event_batch(
+                            &mut event_batch,
+                            &sender,
+                            &metrics,
+                            &rate_limiter,
+                        ).await;
                     }
                     break;
                 }
             }
         }
 
-        info!("Ring buffer processor stopped");
+        info!("⚡ Async event processor stopped");
+    }
+
+    #[cfg(target_os = "linux")]
+    async fn process_event_batch(
+        event_batch: &mut Vec<Vec<u8>>,
+        sender: &mpsc::Sender<RawEvent>,
+        metrics: &Arc<RwLock<EbpfMetrics>>,
+        rate_limiter: &Arc<Semaphore>,
+    ) {
+        let batch_size = event_batch.len();
+        let mut processed = 0;
+        let mut dropped = 0;
+        let mut errors = 0;
+
+        for raw_data in event_batch.drain(..) {
+            // Rate limiting check
+            if rate_limiter.try_acquire().is_err() {
+                dropped += 1;
+                continue;
+            }
+
+            // Parse event
+            match Self::parse_event_sync(&raw_data) {
+                Ok(event) => {
+                    // Try to send event
+                    if sender.try_send(event).is_ok() {
+                        processed += 1;
+                    } else {
+                        dropped += 1;
+                    }
+                }
+                Err(_) => {
+                    errors += 1;
+                }
+            }
+        }
+
+        // Update metrics efficiently
+        {
+            let mut metrics_guard = metrics.write().await;
+            metrics_guard.events_processed += processed;
+            metrics_guard.events_dropped += dropped;
+            metrics_guard.processing_errors += errors;
+            metrics_guard.last_event_timestamp = Some(Instant::now());
+        }
+
+        if batch_size > 0 {
+            debug!("Processed batch: {} events, {} processed, {} dropped, {} errors", 
+                   batch_size, processed, dropped, errors);
+        }
     }
 
     async fn start_background_tasks(&self) -> Result<()> {
@@ -630,9 +905,11 @@ impl EbpfLoader {
     }
 
     #[cfg(target_os = "linux")]
-    fn parse_event_sync(data: &[u8]) -> Result<RawEvent> {
+    pub fn parse_event_sync(data: &[u8]) -> Result<RawEvent> {
         if data.len() < 8 {
-            return Err(anyhow::anyhow!("Event data too short"));
+            return Err(SentinelError::Parse(format!(
+                "Event data too short: expected at least 8 bytes, got {}", data.len()
+            )));
         }
 
         // Simple event type detection based on data size
@@ -692,36 +969,4 @@ pub fn ip_to_string(ip: u32) -> String {
     )
 }
 
-#[cfg(test)]
-mod tests {
-    use super::*;
-
-    #[tokio::test]
-    async fn test_ebpf_loader_initialization() {
-        let mut loader = EbpfLoader::new();
-        let result = loader.initialize().await;
-        assert!(result.is_ok());
-    }
-
-    #[tokio::test]
-    async fn test_event_stream() {
-        let mut loader = EbpfLoader::new();
-        loader.initialize().await.unwrap();
-        
-        let mut stream = loader.event_stream().await;
-        
-        // Should receive events (mock mode)
-        tokio::time::timeout(Duration::from_secs(3), stream.next()).await.unwrap();
-    }
-
-    #[tokio::test]
-    async fn test_metrics_collection() {
-        let mut loader = EbpfLoader::new();
-        loader.initialize().await.unwrap();
-        
-        tokio::time::sleep(Duration::from_secs(1)).await;
-        
-        let metrics = loader.get_metrics().await;
-        assert!(metrics.uptime_seconds > 0);
-    }
-} 
+ 

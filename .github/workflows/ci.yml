@@ -1,4 +1,4 @@
-name: CI
+name: CI/CD Pipeline
 
 on:
   push:
@@ -8,27 +8,23 @@ on:
 
 env:
   CARGO_TERM_COLOR: always
+  RUST_BACKTRACE: 1
 
 jobs:
-  test:
-    name: Test
+  code-quality:
+    name: Code Quality Checks
     runs-on: ubuntu-latest
-    strategy:
-      matrix:
-        rust:
-          - stable
-          - beta
-          - nightly
     steps:
     - uses: actions/checkout@v4
     
-    - name: Install Rust
-      uses: dtolnay/rust-toolchain@master
+    - name: Install Rust toolchain
+      uses: actions-rs/toolchain@v1
       with:
-        toolchain: ${{ matrix.rust }}
+        toolchain: stable
         components: rustfmt, clippy
+        override: true
     
-    - name: Cache dependencies
+    - name: Cache cargo registry
       uses: actions/cache@v3
       with:
         path: |
@@ -40,70 +36,283 @@ jobs:
     - name: Install dependencies
       run: |
         sudo apt-get update
-        sudo apt-get install -y \
-          build-essential \
-          clang \
-          llvm \
-          libclang-dev \
-          linux-headers-$(uname -r) \
-          libbpf-dev
+        sudo apt-get install -y llvm-dev libclang-dev clang libbpf-dev linux-headers-$(uname -r)
     
-    - name: Check formatting
+    - name: Format check
       run: cargo fmt --all -- --check
     
-    - name: Run clippy
+    - name: Clippy analysis
       run: cargo clippy --all-targets --all-features -- -D warnings
     
-    - name: Run tests
-      run: cargo test --verbose
+    - name: Check documentation
+      run: cargo doc --no-deps --document-private-items
     
-    - name: Build
-      run: cargo build --verbose --release
+    - name: Security audit
+      uses: actions-rs/audit-check@v1
+      with:
+        token: ${{ secrets.GITHUB_TOKEN }}
+
+  test:
+    name: Test Suite
+    runs-on: ubuntu-latest
+    strategy:
+      matrix:
+        rust: [stable, beta, nightly]
+    steps:
+    - uses: actions/checkout@v4
+    
+    - name: Install Rust toolchain
+      uses: actions-rs/toolchain@v1
+      with:
+        toolchain: ${{ matrix.rust }}
+        override: true
+    
+    - name: Cache cargo registry
+      uses: actions/cache@v3
+      with:
+        path: |
+          ~/.cargo/registry
+          ~/.cargo/git
+          target
+        key: ${{ runner.os }}-${{ matrix.rust }}-cargo-${{ hashFiles('**/Cargo.lock') }}
+    
+    - name: Install dependencies
+      run: |
+        sudo apt-get update
+        sudo apt-get install -y llvm-dev libclang-dev clang libbpf-dev linux-headers-$(uname -r)
+    
+    - name: Run unit tests
+      run: cargo test --workspace --lib
+    
+    - name: Run integration tests  
+      run: cargo test --workspace --test '*'
+    
+    - name: Run doc tests
+      run: cargo test --workspace --doc
+
+  coverage:
+    name: Code Coverage
+    runs-on: ubuntu-latest
+    steps:
+    - uses: actions/checkout@v4
+    
+    - name: Install Rust toolchain
+      uses: actions-rs/toolchain@v1
+      with:
+        toolchain: stable
+        components: llvm-tools-preview
+        override: true
+    
+    - name: Install dependencies
+      run: |
+        sudo apt-get update
+        sudo apt-get install -y llvm-dev libclang-dev clang libbpf-dev linux-headers-$(uname -r)
+        cargo install grcov
+    
+    - name: Run tests with coverage
+      env:
+        RUSTFLAGS: -Cinstrument-coverage
+        LLVM_PROFILE_FILE: coverage-%p-%m.profraw
+      run: cargo test --workspace
+    
+    - name: Generate coverage report
+      run: |
+        grcov . \
+          --binary-path ./target/debug/ \
+          --source-dir . \
+          --output-type lcov \
+          --branch \
+          --ignore-not-existing \
+          --ignore "target/*" \
+          --ignore "kernel-agent/src/tests.rs" \
+          --ignore "kernel-agent/src/integration_tests.rs" \
+          -o lcov.info
+    
+    - name: Upload coverage to Codecov
+      uses: codecov/codecov-action@v3
+      with:
+        file: ./lcov.info
+        flags: unittests
+        name: codecov-umbrella
+
+  benchmark:
+    name: Performance Benchmarks
+    runs-on: ubuntu-latest
+    steps:
+    - uses: actions/checkout@v4
+    
+    - name: Install Rust toolchain
+      uses: actions-rs/toolchain@v1
+      with:
+        toolchain: stable
+        override: true
+    
+    - name: Install dependencies
+      run: |
+        sudo apt-get update
+        sudo apt-get install -y llvm-dev libclang-dev clang libbpf-dev linux-headers-$(uname -r)
+    
+    - name: Run benchmarks
+      run: cargo bench --workspace
+    
+    - name: Store benchmark results
+      uses: benchmark-action/github-action-benchmark@v1
+      if: github.ref == 'refs/heads/main'
+      with:
+        tool: 'cargo'
+        output-file-path: target/criterion/report/index.html
+        benchmark-data-dir-path: 'bench'
+        auto-push: true
+        github-token: ${{ secrets.GITHUB_TOKEN }}
 
   security:
-    name: Security audit
+    name: Security Scanning
     runs-on: ubuntu-latest
     steps:
     - uses: actions/checkout@v4
     
-    - name: Install Rust
-      uses: dtolnay/rust-toolchain@stable
-    
-    - name: Cache dependencies
-      uses: actions/cache@v3
+    - name: Install Rust toolchain
+      uses: actions-rs/toolchain@v1
       with:
-        path: |
-          ~/.cargo/registry
-          ~/.cargo/git
-          target
-        key: ${{ runner.os }}-cargo-${{ hashFiles('**/Cargo.lock') }}
+        toolchain: stable
+        override: true
     
-    - name: Install cargo-audit
-      run: cargo install cargo-audit
+    - name: Install cargo-deny
+      run: cargo install cargo-deny
     
-    - name: Run security audit
-      run: cargo audit
+    - name: Security audit
+      run: cargo deny check
+    
+    - name: Check for vulnerabilities
+      uses: actions-rs/audit-check@v1
+      with:
+        token: ${{ secrets.GITHUB_TOKEN }}
+    
+    - name: Run Semgrep
+      uses: returntocorp/semgrep-action@v1
+      with:
+        config: >-
+          p/security-audit
+          p/secrets
+          p/rust
 
-  docs:
-    name: Documentation
+  cross-platform:
+    name: Cross Platform Build
+    runs-on: ${{ matrix.os }}
+    strategy:
+      matrix:
+        os: [ubuntu-latest, macos-latest]
+        rust: [stable]
+    steps:
+    - uses: actions/checkout@v4
+    
+    - name: Install Rust toolchain
+      uses: actions-rs/toolchain@v1
+      with:
+        toolchain: ${{ matrix.rust }}
+        override: true
+    
+    - name: Install Linux dependencies
+      if: matrix.os == 'ubuntu-latest'
+      run: |
+        sudo apt-get update
+        sudo apt-get install -y llvm-dev libclang-dev clang libbpf-dev linux-headers-$(uname -r)
+    
+    - name: Install macOS dependencies
+      if: matrix.os == 'macos-latest'
+      run: |
+        brew install llvm
+    
+    - name: Build workspace
+      run: cargo build --workspace --release
+    
+    - name: Run tests (non-Linux falls back to mock mode)
+      run: cargo test --workspace
+
+  docker:
+    name: Docker Build
     runs-on: ubuntu-latest
     steps:
     - uses: actions/checkout@v4
     
-    - name: Install Rust
-      uses: dtolnay/rust-toolchain@stable
+    - name: Set up Docker Buildx
+      uses: docker/setup-buildx-action@v3
     
-    - name: Cache dependencies
-      uses: actions/cache@v3
+    - name: Build Docker image
+      uses: docker/build-push-action@v5
       with:
-        path: |
-          ~/.cargo/registry
-          ~/.cargo/git
-          target
-        key: ${{ runner.os }}-cargo-${{ hashFiles('**/Cargo.lock') }}
+        context: .
+        push: false
+        tags: sentineledge:latest
+        cache-from: type=gha
+        cache-to: type=gha,mode=max
     
-    - name: Build documentation
-      run: cargo doc --no-deps --all-features
+    - name: Test Docker image
+      run: |
+        docker run --rm sentineledge:latest --help
+
+  release:
+    name: Release
+    runs-on: ubuntu-latest
+    needs: [code-quality, test, coverage, security, cross-platform]
+    if: github.ref == 'refs/heads/main' && github.event_name == 'push'
+    steps:
+    - uses: actions/checkout@v4
+      with:
+        fetch-depth: 0
     
-    - name: Check documentation
-      run: cargo doc --no-deps --all-features --document-private-items 
+    - name: Install Rust toolchain
+      uses: actions-rs/toolchain@v1
+      with:
+        toolchain: stable
+        override: true
+    
+    - name: Install dependencies
+      run: |
+        sudo apt-get update
+        sudo apt-get install -y llvm-dev libclang-dev clang libbpf-dev linux-headers-$(uname -r)
+    
+    - name: Build release binaries
+      run: cargo build --workspace --release
+    
+    - name: Create release archive
+      run: |
+        mkdir -p release
+        cp target/release/sentinel-edge release/
+        cp README.md LICENSE release/
+        tar -czf sentineledge-linux-x64.tar.gz -C release .
+    
+    - name: Generate changelog
+      id: changelog
+      run: |
+        # Generate changelog from git commits
+        echo "CHANGELOG<<EOF" >> $GITHUB_OUTPUT
+        git log --pretty=format:"- %s" $(git describe --tags --abbrev=0)..HEAD >> $GITHUB_OUTPUT
+        echo "EOF" >> $GITHUB_OUTPUT
+    
+    - name: Create GitHub Release
+      uses: softprops/action-gh-release@v1
+      if: startsWith(github.ref, 'refs/tags/')
+      with:
+        files: sentineledge-linux-x64.tar.gz
+        body: ${{ steps.changelog.outputs.CHANGELOG }}
+        draft: false
+        prerelease: false
+      env:
+        GITHUB_TOKEN: ${{ secrets.GITHUB_TOKEN }}
+
+  notification:
+    name: Notification
+    runs-on: ubuntu-latest
+    needs: [code-quality, test, coverage, security, cross-platform]
+    if: always()
+    steps:
+    - name: Notify on success
+      if: ${{ needs.code-quality.result == 'success' && needs.test.result == 'success' }}
+      run: echo "✅ All CI checks passed!"
+    
+    - name: Notify on failure
+      if: ${{ needs.code-quality.result == 'failure' || needs.test.result == 'failure' }}
+      run: |
+        echo "❌ CI checks failed!"
+        exit 1

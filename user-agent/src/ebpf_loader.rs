@@ -16,7 +16,7 @@ impl EbpfLoader {
     }
 
     pub async fn initialize(&mut self) -> Result<()> {
-        self.inner.initialize().await
+        self.inner.initialize().await.map_err(|e| anyhow::anyhow!(e))
     }
 
     pub async fn event_stream(&self) -> impl tokio_stream::Stream<Item = kernel_agent::RawEvent> {
