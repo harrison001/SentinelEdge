@@ -108,8 +108,25 @@ git clone https://github.com/harrison001/SentinelEdge.git
 cd SentinelEdge
 cargo build --release
 
-# Run kernel monitoring demo (Linux only)
-sudo ./target/release/sentinel-edge --ebpf-demo
+# Compile eBPF programs (requires root)
+sudo -i
+cd /home/harrison/SentinelEdge/kernel-agent/src
+
+# Compile sentinel monitoring program
+clang -O2 -g -target bpf \
+  -D__TARGET_ARCH_x86 \
+  -I. -I/usr/include/$(uname -m)-linux-gnu \
+  -c sentinel.bpf.c -o sentinel.bpf.o
+
+# Run system monitoring demo (process execution, network connections, file operations)
+sudo ../../target/release/sentinel_loader
+
+# Compile syscall modifier program  
+clang -O2 -target bpf -g -D__TARGET_ARCH_x86 \
+  -c syscall_modifier.bpf.c -o syscall_modifier.bpf.o
+
+# Run syscall security demo (protects sensitive files, threat scoring, security logging)
+../../target/release/syscall_modifier_loader
 ```
 
 ## 📊 **Technical Specifications**

@@ -10,13 +10,13 @@
 #define MAX_PROCESSES 1000
 #define MAX_RULES 100
 
-// ========== 固定敏感路径放到 .rodata ========== 
+// ========== Fixed sensitive paths in .rodata ========== 
 const volatile char SENSITIVE_PASSWD[] SEC(".rodata") = "/etc/passwd";
 const volatile char SENSITIVE_SHADOW[] SEC(".rodata") = "/etc/shadow";
 const volatile char SENSITIVE_SUDOERS[] SEC(".rodata") = "/etc/sudoers";
 const volatile char SENSITIVE_ROOT[]   SEC(".rodata") = "/root/";
 
-// ========== map 结构 ==========
+// ========== Map structures ==========
 struct access_rule {
     char target_path[MAX_FILENAME_LEN];
     char redirect_path[MAX_FILENAME_LEN];
@@ -76,30 +76,30 @@ struct {
     __uint(max_entries, 256 * 1024);
 } syscall_events SEC(".maps");
 
-// ========== helpers ==========
+// ========== Helper functions ==========
 static __always_inline void update_stats(__u32 idx) {
-    // 可选统计map，略
+    // Optional statistics map, omitted
 }
 
 static __always_inline int bpf_prefix_match(const char *path, const volatile char *prefix, int len) {
     return bpf_strncmp(path, len, (const char *)prefix) == 0;
 }
 
-// ✅ 简化字符串匹配避免verifier无限循环
+// ✅ Simplified string matching to avoid verifier infinite loops
 static __always_inline int match_rule_prefix(const char *path, const char *rule_path) {
-    // 简化版本：只检查前16个字符以避免verifier复杂度
+    // Simplified version: only check first 16 characters to avoid verifier complexity
     #pragma unroll
     for (int i = 0; i < 16; i++) {
         char a = path[i];
         char b = rule_path[i];
-        if (b == '\0') return 1;    // rule匹配完成
-        if (a == '\0') return 0;    // path结束但rule未完成
-        if (a != b) return 0;       // 字符不匹配
+        if (b == '\0') return 1;    // rule match completed
+        if (a == '\0') return 0;    // path ended but rule not completed
+        if (a != b) return 0;       // character mismatch
     }
     return 1;
 }
 
-// ✅ 固定敏感路径检测（.rodata）
+// ✅ Fixed sensitive path detection (.rodata)
 static __always_inline int is_sensitive_path(const char *path) {
     if (bpf_prefix_match(path, SENSITIVE_PASSWD, 11)) return 1;
     if (bpf_prefix_match(path, SENSITIVE_SHADOW, 11)) return 1;
@@ -108,7 +108,7 @@ static __always_inline int is_sensitive_path(const char *path) {
     return 0;
 }
 
-// ✅ threat_score 简化
+// ✅ Simplified threat_score calculation
 static __always_inline int calc_threat_score(const char *path, __u32 uid) {
     int s = 0;
     if (is_sensitive_path(path)) s += 50;
@@ -117,7 +117,7 @@ static __always_inline int calc_threat_score(const char *path, __u32 uid) {
     return s;
 }
 
-// ringbuf event 填充
+// ringbuf event population
 static __always_inline void log_event(__u32 pid, __u32 uid, __u32 gid,
                                       __u32 syscall_nr,
                                       const char *orig, const char *mod,
@@ -149,16 +149,16 @@ int tp_openat(struct trace_event_raw_sys_enter *ctx) {
     char fname[MAX_FILENAME_LEN];
     bpf_probe_read_user_str(fname, sizeof(fname), (void *)ctx->args[1]);
 
-    // threat_score
+    // Calculate threat score
     __u32 score = calc_threat_score(fname, uid);
 
-    // 简化规则处理，先只记录事件
+    // Simplified rule processing, only log events for now
     log_event(pid, uid, gid, 257, fname, fname, "OPENAT", 3, 0, score);
 
     return 0;
 }
 
-// ========== execve hook + 阻断 ==========
+// ========== execve hook + blocking ==========
 SEC("tp/syscalls/sys_enter_execve")
 int tp_execve(struct trace_event_raw_sys_enter *ctx) {
     __u32 pid = bpf_get_current_pid_tgid() >> 32;
@@ -168,10 +168,10 @@ int tp_execve(struct trace_event_raw_sys_enter *ctx) {
     char fname[MAX_FILENAME_LEN];
     bpf_probe_read_user_str(fname, sizeof(fname), (void *)ctx->args[0]);
 
-    // threat_score > 50 阻断
+    // Block if threat score > 50
     __u32 score = calc_threat_score(fname, uid);
 
-    // 简化处理，只记录execve事件
+    // Simplified processing, only log execve events
     log_event(pid, uid, gid, 59, fname, fname, "EXECVE", 3, 0, score);
 
     return 0;
