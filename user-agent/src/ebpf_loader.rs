@@ -23,16 +23,20 @@ impl EbpfLoader {
         self.inner.event_stream().await
     }
 
-    pub async fn collect_events_batch(&self, batch_size: usize, max_wait: std::time::Duration) -> Vec<kernel_agent::RawEvent> {
-        self.inner.collect_events_batch(batch_size, max_wait).await
+    // TEMPORARILY DISABLED: These methods not available in simplified version
+    pub async fn collect_events_batch(&self, _batch_size: usize, _max_wait: std::time::Duration) -> Vec<kernel_agent::RawEvent> {
+        // self.inner.collect_events_batch(batch_size, max_wait).await
+        vec![] // Temporary placeholder
     }
 
     pub async fn get_metrics(&self) -> kernel_agent::EbpfMetrics {
-        self.inner.get_metrics().await
+        // self.inner.get_metrics().await
+        kernel_agent::EbpfMetrics::default() // Temporary placeholder
     }
 
     pub fn is_real_mode(&self) -> bool {
-        self.inner.is_real_mode()
+        // self.inner.is_real_mode()
+        true // Temporary - simplified version is always "real"
     }
 
     pub async fn shutdown(self) {

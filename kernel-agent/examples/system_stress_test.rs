@@ -588,6 +588,7 @@ async fn run_sustained_load_test(loader: &EbpfLoader) -> anyhow::Result<Sustaine
     };
     
     // Sample throughput every second
+    let success_count_clone = Arc::clone(&success_count);
     let throughput_monitor = tokio::spawn(async move {
         let mut samples = Vec::new();
         let mut last_count = 0u64;
@@ -595,7 +596,7 @@ async fn run_sustained_load_test(loader: &EbpfLoader) -> anyhow::Result<Sustaine
         while start_time.elapsed() < test_duration {
             tokio::time::sleep(Duration::from_secs(1)).await;
             
-            let current_count = success_count.load(Ordering::SeqCst);
+            let current_count = success_count_clone.load(Ordering::SeqCst);
             let throughput = (current_count - last_count) as f64;
             samples.push(throughput);
             last_count = current_count;
@@ -748,7 +749,8 @@ async fn cleanup_stress_test() -> anyhow::Result<()> {
     let _ = Command::new("find")
         .args(&["/tmp", "-name", "stress_test_*", "-delete"])
         .output()
-        .await;
+        .await
+        .map_err(|e| anyhow::anyhow!("Command failed: {}", e))?;
     
     info!("✅ Cleanup completed");
     Ok(())

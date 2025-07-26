@@ -9,3 +9,19 @@ edition = "2021"
 [dependencies]
 libbpf-rs = "0.23"
 anyhow = "1.0"
+tokio = { version = "1", features = ["full"] }
+tokio-stream = "0.1"
+kernel-agent = { path = "../kernel-agent" }
+ctrlc = "3.4.7"
+
+[[bin]]
+name = "ring-demo" 
+path = "src/ring_demo.rs"
+
+[[bin]]
+name = "main-test"
+path = "simple_main_test.rs"
+
+[[bin]]
+name = "minimal-test"
+path = "test_minimal_main.rs"

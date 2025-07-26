@@ -1,7 +1,7 @@
 // kernel-agent/src/memory_analyzer.bpf.c
 // Advanced memory access pattern analysis and buffer overflow detection
 
-#include <vmlinux.h>
+#include "vmlinux.h"
 #include <bpf/bpf_helpers.h>
 #include <bpf/bpf_tracing.h>
 #include <bpf/bpf_core_read.h>
@@ -166,7 +166,76 @@ static __always_inline void analyze_access_pattern(__u64 addr, __u64 size, __u32
     }
 }
 
+// 手动定义 tracepoint 格式
+struct page_fault_ctx {
+    __u64 address;
+    __u64 ip;
+    __u32 error_code;
+};
+
+SEC("tracepoint/exceptions/page_fault_user")
+int trace_page_fault_user(void *ctx)
+{
+    struct memory_event *event;
+    event = bpf_ringbuf_reserve(&memory_events, sizeof(*event), 0);
+    if (!event)
+        return 0;
+
+    event->timestamp = bpf_ktime_get_ns();
+    event->pid = bpf_get_current_pid_tgid() >> 32;
+    event->tid = bpf_get_current_pid_tgid() & 0xFFFFFFFF;
+    bpf_get_current_comm(&event->comm, sizeof(event->comm));
+
+    event->addr = 0;          // 不去访问 ctx->address 避免非法偏移
+    event->fault_type = 0;    // 同理先留空
+
+    bpf_ringbuf_submit(event, 0);
+    return 0;
+}
+
+SEC("tracepoint/exceptions/page_fault_kernel")
+int trace_page_fault_kernel(void *ctx)
+{
+    struct memory_event *event;
+
+    event = bpf_ringbuf_reserve(&memory_events, sizeof(*event), 0);
+    if (!event)
+        return 0;
+
+    event->timestamp = bpf_ktime_get_ns();
+    event->pid = bpf_get_current_pid_tgid() >> 32;
+    event->tid = bpf_get_current_pid_tgid() & 0xFFFFFFFF;
+    bpf_get_current_comm(&event->comm, sizeof(event->comm));
+
+    event->addr = 0;
+    event->fault_type = 0;
+
+    bpf_ringbuf_submit(event, 0);
+    return 0;
+} 
+/*
 // Page fault handler - detects memory access violations
+SEC("tracepoint/exceptions/page_fault_user")
+int trace_page_fault(struct trace_event_raw_page_fault_user *ctx) {
+    __u32 pid = bpf_get_current_pid_tgid() >> 32;
+    __u32 tid = bpf_get_current_pid_tgid() & 0xFFFFFFFF;
+
+    struct memory_event *event = bpf_ringbuf_reserve(&memory_events, sizeof(*event), 0);
+    if (!event) return 0;
+
+    event->timestamp = bpf_ktime_get_ns();
+    event->pid = pid;
+    event->tid = tid;
+
+    bpf_get_current_comm(&event->comm, sizeof(event->comm));
+    event->addr = ctx->address;      // tracepoint自带fault地址
+    event->fault_type = ctx->error_code;
+
+    // 这里你原来做的stack_id之类的也可以保留
+    bpf_ringbuf_submit(event, 0);
+    return 0;
+}
+
 SEC("kprobe/do_page_fault")
 int trace_page_fault(struct pt_regs *ctx) {
     __u32 pid = bpf_get_current_pid_tgid() >> 32;
@@ -232,7 +301,7 @@ int trace_page_fault(struct pt_regs *ctx) {
     bpf_ringbuf_submit(event, 0);
     return 0;
 }
-
+*/
 // malloc tracking
 SEC("uprobe/malloc")
 int trace_malloc(struct pt_regs *ctx) {
@@ -483,7 +552,7 @@ int trace_process_exit(struct pt_regs *ctx) {
 }
 
 // Stack overflow detection
-SEC("kprobe/stack_overflow_check")
+SEC("kprobe/handle_stack_overflow")
 int trace_stack_overflow(struct pt_regs *ctx) {
     __u32 pid = bpf_get_current_pid_tgid() >> 32;
     __u64 stack_ptr = PT_REGS_SP(ctx);

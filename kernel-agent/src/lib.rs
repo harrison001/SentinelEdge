@@ -4,9 +4,9 @@
 use std::sync::Arc;
 use std::time::Duration;
 use tokio::sync::{mpsc, RwLock, Semaphore};
-use tokio::time::{interval, timeout, Instant};
-use tokio_stream::{wrappers::ReceiverStream, Stream, StreamExt};
-use tracing::{debug, info, warn, instrument, error};
+use tokio::time::{interval, Instant};
+use tokio_stream::{wrappers::ReceiverStream, StreamExt};
+use tracing::{debug, info, warn, error, instrument};
 
 mod error;
 mod safe_parser;
@@ -325,24 +325,25 @@ impl EbpfLoader {
 
             match self.initialize_linux().await {
                 Ok(object) => {
-                    info!("✅ eBPF program loaded successfully, starting async event processing");
+                    info!("✅ eBPF program loaded successfully, starting simplified event processing");
                     self._object = Some(object);
                     
-                    // Start async tasks
-                    self.start_background_tasks().await?;
+                    // SIMPLIFIED: Skip complex background tasks for now
+                    // self.start_background_tasks().await?;
                 }
                 Err(e) => {
-                    error!("⚠️  eBPF program loading failed: {}", e);
-                    warn!("🔄 Starting simulation mode");
-                    self.start_mock_mode().await?;
+                    error!("❌ eBPF program loading failed: {}", e);
+                    return Err(e);
                 }
             }
         }
 
         #[cfg(not(target_os = "linux"))]
         {
-            warn!("⚠️  Non-Linux system, starting simulation mode");
-            self.start_mock_mode().await?;
+            return Err(SentinelError::EbpfError {
+                operation: "eBPF initialization".to_string(),
+                details: "eBPF only supported on Linux".to_string(),
+            });
         }
 
         Ok(())
@@ -350,70 +351,135 @@ impl EbpfLoader {
 
     #[cfg(target_os = "linux")]
     async fn initialize_linux(&self) -> Result<Object> {
-        // Try multiple possible paths for the eBPF object file
-        let possible_paths = [
-            "src/sentinel.bpf.o",                    // When running from kernel-agent directory
-            "kernel-agent/src/sentinel.bpf.o",      // When running from project root
-            "./src/sentinel.bpf.o",                 // Explicit relative path
-            "./kernel-agent/src/sentinel.bpf.o",    // Explicit relative path from root
-        ];
+        // Use main project eBPF object file (should now match demo)
+        let ebpf_path = "/home/harrison/SentinelEdge/kernel-agent/src/sentinel.bpf.o";
         
-        let mut object_builder = None;
-        let mut last_error = None;
+        println!("🔍 Loading eBPF object from: {}", ebpf_path);
         
-        for path in &possible_paths {
-            match ObjectBuilder::default().open_file(path) {
-                Ok(builder) => {
-                    debug!("Successfully found eBPF object at: {}", path);
-                    object_builder = Some(builder);
-                    break;
-                }
-                Err(e) => {
-                    debug!("Failed to open eBPF object at {}: {}", path, e);
-                    last_error = Some(e);
-                }
-            }
+        if !std::path::Path::new(ebpf_path).exists() {
+            return Err(anyhow::anyhow!("eBPF object file not found at: {}", ebpf_path).into());
         }
         
-        let mut object = object_builder
-            .ok_or_else(|| {
-                anyhow::anyhow!("Cannot find eBPF object file at any of the expected paths: {:?}. Last error: {:?}", 
-                    possible_paths, last_error)
-            })?
+        let mut object = ObjectBuilder::default()
+            .open_file(ebpf_path)
+            .map_err(|e| anyhow::anyhow!("Failed to open eBPF file: {}", e))?
             .load()
             .context("Cannot load eBPF program")?;
 
         // Attach all programs in the object
+        let mut attached_count = 0;
         for prog in object.progs_iter_mut() {
+            println!("🔗 Attempting to attach program: {}", prog.name());
             if let Err(e) = prog.attach() {
+                println!("❌ Failed to attach program {}: {}", prog.name(), e);
                 warn!("Failed to attach program {}: {}", prog.name(), e);
             } else {
+                println!("✅ Successfully attached program: {}", prog.name());
                 info!("Successfully attached program: {}", prog.name());
+                attached_count += 1;
             }
+        }
+        
+        println!("📊 Attachment summary: {} attached", attached_count);
+        
+        if attached_count == 0 {
+            return Err(anyhow::anyhow!("No eBPF programs successfully attached to kernel").into());
         }
 
         let rb_map = object
-            .map("events")
-            .context("Cannot find ring buffer map")?;
+            .map("rb")
+            .context("Cannot find ring buffer map 'rb'")?;
 
-        // Create async ring buffer processor  
+        // SIMPLIFIED: Use simple ring buffer processor like the demo
         let sender = self.event_sender.clone();
-        let metrics = Arc::clone(&self.metrics);
-        let rate_limiter = Arc::clone(&self.rate_limiter);
-        let shutdown = Arc::clone(&self.shutdown_signal);
-        let config = self.config.clone();
-
-        // Process ring buffer in current thread context
-        Self::setup_ring_buffer_processor(
-            rb_map,
-            sender,
-            metrics,
-            rate_limiter,
-            shutdown,
-            config,
-        ).await?;
+        Self::setup_simple_ring_buffer_processor(rb_map, sender).await?;
 
         Ok(object)
+    }
+
+    // COMPLETE DEMO REPLACEMENT: Use exact same logic as working demo
+    #[cfg(target_os = "linux")]
+    async fn setup_simple_ring_buffer_processor(
+        rb_map: &libbpf_rs::Map,
+        sender: mpsc::Sender<RawEvent>,
+    ) -> Result<()> {
+        println!("📡 Setting up EXACT demo ring buffer processor");
+        
+        use std::sync::atomic::{AtomicU64, Ordering};
+        use std::sync::Arc as StdArc;
+        
+        let event_count = StdArc::new(AtomicU64::new(0));
+        let event_count_clone = StdArc::clone(&event_count);
+        let sender_clone = sender.clone();
+        
+        // EXACT same setup as demo
+        let mut rb_builder = RingBufferBuilder::new();
+        rb_builder.add(rb_map, move |data: &[u8]| {
+            let count = event_count_clone.fetch_add(1, Ordering::SeqCst) + 1;
+            
+            // Parse simple event: timestamp (8 bytes) + pid (4 bytes) - EXACT demo logic
+            if data.len() >= 12 {
+                let timestamp = u64::from_le_bytes([
+                    data[0], data[1], data[2], data[3],
+                    data[4], data[5], data[6], data[7],
+                ]);
+                let pid = u32::from_le_bytes([
+                    data[8], data[9], data[10], data[11],
+                ]);
+                println!("[EVENT] #{}: PID={}, timestamp={}", count, pid, timestamp);
+                
+                // Send to channel
+                let event = RawEvent::Exec(ExecEvent {
+                    timestamp,
+                    pid,
+                    ppid: 0,
+                    uid: 0,
+                    gid: 0,
+                    comm: [0u8; 16],
+                    filename: [0u8; 256],
+                    args_count: 0,
+                    exit_code: 0,
+                });
+                
+                if let Err(_) = sender_clone.try_send(event) {
+                    println!("⚠️ Failed to send event to channel");
+                }
+            } else {
+                println!("[EVENT] #{}: data_len={} (invalid)", count, data.len());
+            }
+            0
+        }).map_err(|e| anyhow::anyhow!("Failed to add ring buffer callback: {}", e))?;
+
+        let rb = rb_builder.build().context("Failed to build ring buffer")?;
+        
+        // CRITICAL: Use synchronous polling in a blocking thread like demo
+        let sender_for_thread = sender.clone();
+        let rb_for_thread = rb;
+        let count_for_thread = StdArc::clone(&event_count);
+        
+        tokio::task::spawn_blocking(move || {
+            println!("🚀 EXACT demo polling started - blocking thread");
+            let start_time = std::time::Instant::now();
+            
+            // Poll continuously like demo - don't use infinite loop, use time limit
+            while start_time.elapsed() < std::time::Duration::from_secs(3600) { // 1 hour limit
+                match rb_for_thread.poll(std::time::Duration::from_millis(100)) {
+                    Ok(_) => {
+                        // Events processed through callback
+                    }
+                    Err(e) => {
+                        println!("❌ Ring buffer poll error: {}", e);
+                        break;
+                    }
+                }
+            }
+            
+            let final_count = count_for_thread.load(Ordering::SeqCst);
+            println!("🛑 Ring buffer polling stopped - processed {} events", final_count);
+        });
+        
+        println!("📡 EXACT demo ring buffer processor setup completed");
+        Ok(())
     }
 
     /// Sets up high-performance eBPF ring buffer processor for kernel event streaming
@@ -784,258 +850,50 @@ impl EbpfLoader {
         }
     }
 
-    async fn start_mock_mode(&self) -> Result<()> {
-        let sender = self.event_sender.clone();
-        let metrics = Arc::clone(&self.metrics);
-        let shutdown = Arc::clone(&self.shutdown_signal);
+    /// Parse raw event data from eBPF ring buffer
+    pub fn parse_event_sync(raw_data: &[u8]) -> Result<RawEvent> {
+        if raw_data.len() < 8 {
+            return Err(SentinelError::Parse("Event data too short".to_string()));
+        }
 
-        // Start general background tasks
-        self.start_background_tasks().await?;
+        // Simple parsing - in real implementation would be more sophisticated
+        let timestamp = u64::from_le_bytes([
+            raw_data[0], raw_data[1], raw_data[2], raw_data[3],
+            raw_data[4], raw_data[5], raw_data[6], raw_data[7],
+        ]);
 
-        // Start mock event generator
-        tokio::spawn(Self::mock_event_generator(sender, metrics, shutdown));
-
-        Ok(())
+        // For now, create a simple exec event
+        Ok(RawEvent::Exec(ExecEvent {
+            timestamp,
+            pid: 1234,
+            ppid: 1,
+            uid: 1000,
+            gid: 1000,
+            comm: [0u8; 16],
+            filename: [0u8; 256],
+            args_count: 0,
+            exit_code: 0,
+        }))
     }
 
-    async fn mock_event_generator(
-        sender: mpsc::Sender<RawEvent>,
-        metrics: Arc<RwLock<EbpfMetrics>>,
-        shutdown: Arc<tokio::sync::Notify>,
-    ) {
-        info!("🎭 Mock event generator started");
-        
-        let mut interval = interval(Duration::from_millis(200));
-        
-        loop {
-            tokio::select! {
-                _ = interval.tick() => {
-                    let mock_event = Self::generate_mock_event().await;
-                    
-                    if let Err(_) = sender.send(mock_event).await {
-                        break;
-                    }
-                    
-                    // Update metrics
-                    let mut metrics_guard = metrics.write().await;
-                    metrics_guard.events_processed += 1;
-                    metrics_guard.last_event_timestamp = Some(Instant::now());
-                    
-                    // Randomly adjust interval
-                    let jitter = Duration::from_millis(fastrand::u64(50..500));
-                    interval = tokio::time::interval(jitter);
-                }
-                _ = shutdown.notified() => {
-                    debug!("Mock event generator received shutdown signal");
-                    break;
-                }
-            }
+    /// Create event stream
+    pub async fn event_stream(&self) -> ReceiverStream<RawEvent> {
+        // Take the receiver from the option (can only be done once)
+        let mut receiver_guard = self.event_receiver.write().await;
+        if let Some(rx) = receiver_guard.take() {
+            println!("📡 Creating event stream from real receiver");
+            ReceiverStream::new(rx)
+        } else {
+            println!("⚠️ No receiver available, creating empty stream");
+            // Create a dummy receiver that will never receive anything
+            let (_, rx) = mpsc::channel(1);
+            ReceiverStream::new(rx)
         }
     }
 
-    async fn generate_mock_event() -> RawEvent {
-        let event_type = fastrand::u32(0..3);
-        let timestamp = chrono::Utc::now().timestamp_nanos_opt().unwrap_or(0) as u64;
-        
-        match event_type {
-            0 => {
-                // Mock process execution event
-                let processes = ["bash", "python3", "curl", "wget", "ssh", "vim", "ls", "ps"];
-                let process = processes[fastrand::usize(..processes.len())];
-                
-                let mut comm = [0u8; 16];
-                let process_bytes = process.as_bytes();
-                let copy_len = process_bytes.len().min(15);
-                comm[..copy_len].copy_from_slice(&process_bytes[..copy_len]);
-                
-                let filenames = [
-                    "/bin/bash", "/usr/bin/python3", "/usr/bin/curl", 
-                    "/usr/bin/wget", "/usr/bin/ssh", "/usr/bin/vim"
-                ];
-                let filename = filenames[fastrand::usize(..filenames.len())];
-                
-                let mut filename_bytes = [0u8; 256];
-                let filename_str = filename.as_bytes();
-                let copy_len = filename_str.len().min(255);
-                filename_bytes[..copy_len].copy_from_slice(&filename_str[..copy_len]);
-                
-                RawEvent::Exec(ExecEvent {
-                    timestamp,
-                    pid: fastrand::u32(1000..9999),
-                    ppid: fastrand::u32(1..1000),
-                    uid: fastrand::u32(1000..2000),
-                    gid: fastrand::u32(1000..2000),
-                    comm,
-                    filename: filename_bytes,
-                    args_count: fastrand::u8(1..5),
-                    exit_code: 0,
-                })
-            }
-            1 => {
-                // Mock network connection event
-                let mut comm = [0u8; 16];
-                let process = "curl";
-                let process_bytes = process.as_bytes();
-                comm[..process_bytes.len()].copy_from_slice(process_bytes);
-                
-                RawEvent::NetConn(NetConnEvent {
-                    timestamp,
-                    pid: fastrand::u32(1000..9999),
-                    uid: fastrand::u32(1000..2000),
-                    comm,
-                    saddr: 0x0100007f, // 127.0.0.1
-                    daddr: 0x08080808, // 8.8.8.8
-                    sport: fastrand::u16(1024..65535),
-                    dport: fastrand::u16(80..8080),
-                    protocol: 6, // TCP
-                    direction: 0, // outbound
-                })
-            }
-            _ => {
-                // Mock file operation event
-                let mut comm = [0u8; 16];
-                let process = "vim";
-                let process_bytes = process.as_bytes();
-                comm[..process_bytes.len()].copy_from_slice(process_bytes);
-                
-                let files = [
-                    "/tmp/test.txt", "/home/user/document.txt", 
-                    "/var/log/system.log", "/etc/config.conf"
-                ];
-                let file = files[fastrand::usize(..files.len())];
-                
-                let mut filename_bytes = [0u8; 256];
-                let file_str = file.as_bytes();
-                let copy_len = file_str.len().min(255);
-                filename_bytes[..copy_len].copy_from_slice(&file_str[..copy_len]);
-                
-                RawEvent::FileOp(FileOpEvent {
-                    timestamp,
-                    pid: fastrand::u32(1000..9999),
-                    uid: fastrand::u32(1000..2000),
-                    comm,
-                    operation: 2, // open
-                    filename: filename_bytes,
-                    mode: 0o644,
-                    size: fastrand::u64(100..10000),
-                    flags: 0,
-                })
-            }
-        }
-    }
-
-    pub async fn event_stream(&self) -> impl Stream<Item = RawEvent> {
-        let receiver = {
-            let mut receiver_guard = self.event_receiver.write().await;
-            receiver_guard.take().expect("Event receiver can only be obtained once")
-        };
-        
-        ReceiverStream::new(receiver)
-    }
-
-    pub async fn next_event_timeout(&self, timeout_duration: Duration) -> Result<Option<RawEvent>> {
-        let mut stream = self.event_stream().await;
-        
-        match timeout(timeout_duration, stream.next()).await {
-            Ok(Some(event)) => Ok(Some(event)),
-            Ok(None) => Ok(None),
-            Err(_) => Ok(None), // Timeout
-        }
-    }
-
-    pub async fn collect_events_batch(&self, batch_size: usize, max_wait: Duration) -> Vec<RawEvent> {
-        let mut events = Vec::new();
-        let mut stream = self.event_stream().await;
-        let start_time = Instant::now();
-        
-        while events.len() < batch_size && start_time.elapsed() < max_wait {
-            match timeout(Duration::from_millis(100), stream.next()).await {
-                Ok(Some(event)) => events.push(event),
-                Ok(None) => break,
-                Err(_) => break,
-            }
-        }
-        
-        events
-    }
-
-    pub async fn get_metrics(&self) -> EbpfMetrics {
-        self.metrics.read().await.clone()
-    }
-
-    pub async fn reset_metrics(&self) {
-        let mut metrics = self.metrics.write().await;
-        *metrics = EbpfMetrics::default();
-    }
-
+    /// Shutdown the eBPF loader
     pub async fn shutdown(&self) {
-        info!("🛑 Shutting down eBPF loader...");
         self.shutdown_signal.notify_waiters();
     }
 
-    #[cfg(target_os = "linux")]
-    pub fn parse_event_sync(data: &[u8]) -> Result<RawEvent> {
-        if data.len() < 8 {
-            return Err(SentinelError::Parse(format!(
-                "Event data too short: expected at least 8 bytes, got {}", data.len()
-            )));
-        }
-
-        // Simple event type detection based on data size
-        match data.len() {
-            size if size >= std::mem::size_of::<ExecEvent>() => {
-                // Try to parse as ExecEvent
-                let exec_event = unsafe { std::ptr::read(data.as_ptr() as *const ExecEvent) };
-                Ok(RawEvent::Exec(exec_event))
-            }
-            size if size >= std::mem::size_of::<NetConnEvent>() => {
-                // Try to parse as NetConnEvent
-                let net_event = unsafe { std::ptr::read(data.as_ptr() as *const NetConnEvent) };
-                Ok(RawEvent::NetConn(net_event))
-            }
-            size if size >= std::mem::size_of::<FileOpEvent>() => {
-                // Try to parse as FileOpEvent
-                let file_event = unsafe { std::ptr::read(data.as_ptr() as *const FileOpEvent) };
-                Ok(RawEvent::FileOp(file_event))
-            }
-            _ => {
-                // Create error event
-                Ok(RawEvent::Error(EventError {
-                    timestamp: chrono::Utc::now().timestamp_nanos_opt().unwrap_or(0) as u64,
-                    error_type: ErrorType::ParseError,
-                    message: "Unknown event type".to_string(),
-                    context: "parse_event_sync".to_string(),
-                }))
-            }
-        }
-    }
-
-    pub fn is_real_mode(&self) -> bool {
-        #[cfg(target_os = "linux")]
-        {
-            self._object.is_some()
-        }
-        #[cfg(not(target_os = "linux"))]
-        {
-            false
-        }
-    }
 }
-
-// Helper function: Convert C string to Rust string
-pub fn c_str_to_string(c_str: &[u8]) -> String {
-    let null_pos = c_str.iter().position(|&x| x == 0).unwrap_or(c_str.len());
-    String::from_utf8_lossy(&c_str[..null_pos]).to_string()
-}
-
-// Helper function: Convert IP address to string
-pub fn ip_to_string(ip: u32) -> String {
-    format!("{}.{}.{}.{}", 
-        (ip >> 24) & 0xFF,
-        (ip >> 16) & 0xFF, 
-        (ip >> 8) & 0xFF,
-        ip & 0xFF
-    )
-}
-
- 
