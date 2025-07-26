@@ -361,10 +361,14 @@ async fn measure_performance_metrics(loader: &EbpfLoader, config: &EbpfConfig) -
                                     // In real implementation, we'd collect these properly
                                 }
                             }
-                            Err(_) => dropped.fetch_add(1, Ordering::SeqCst),
+                            Err(_) => {
+                                dropped.fetch_add(1, Ordering::SeqCst);
+                            }
                         }
                     }
-                    Err(_) => dropped.fetch_add(1, Ordering::SeqCst),
+                    Err(_) => {
+                        dropped.fetch_add(1, Ordering::SeqCst);
+                    }
                 }
 
                 if i % 100 == 0 {
