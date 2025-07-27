@@ -10,6 +10,22 @@
 #define MAX_PROCESSES 1000
 #define MAX_RULES 100
 
+#ifndef HAVE_BPF_STRNCMP
+// Rocky8 does not have bpf_strncmp, define a fallback implementation
+static __always_inline int __bpf_strncmp_fallback(const char *s1, const char *s2, unsigned int n) {
+    #pragma clang loop unroll(full)
+    for (unsigned int i = 0; i < n; i++) {
+        if (s1[i] != s2[i]) return 1;   // mismatch
+        if (s1[i] == '\0') break;       // reached the end
+    }
+    return 0; // match
+}
+
+// ✅ Use a macro to automatically correct the "old argument order" into the correct call
+#define bpf_strncmp(a, b, c) __bpf_strncmp_fallback((a), (const char *)(c), (b))
+
+#endif
+
 // ========== Fixed sensitive paths in .rodata ========== 
 const volatile char SENSITIVE_PASSWD[] SEC(".rodata") = "/etc/passwd";
 const volatile char SENSITIVE_SHADOW[] SEC(".rodata") = "/etc/shadow";
@@ -76,8 +92,11 @@ struct {
     __uint(max_entries, 256 * 1024);
 } syscall_events SEC(".maps");
 
+
+
 // ========== Helper functions ==========
 static __always_inline void update_stats(__u32 idx) {
+
     // Optional statistics map, omitted
 }
 

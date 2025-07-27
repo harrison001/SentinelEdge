@@ -68,29 +68,29 @@ name = "performance"
 harness = false
 
 # Binary configuration
-[[bin]]
-name = "real_performance_test"
-path = "src/bin/real_performance_test.rs"
+#[[bin]]
+#name = "real_performance_test"
+#path = "src/bin/real_performance_test.rs"
 
-[[bin]]
-name = "simple_test"
-path = "src/bin/simple_test.rs"
+#[[bin]]
+#name = "simple_test"
+#path = "src/bin/simple_test.rs"
 
-[[bin]]
-name = "ring_buffer_test"
-path = "src/bin/ring_buffer_test.rs"
+#[[bin]]
+#name = "ring_buffer_test"
+#path = "src/bin/ring_buffer_test.rs"
 
-[[bin]]
-name = "simple_counter_test"
-path = "src/bin/simple_counter_test.rs"
+#[[bin]]
+#name = "simple_counter_test"
+#path = "src/bin/simple_counter_test.rs"
 
-[[bin]]
-name = "mimic_demo_test"
-path = "src/bin/mimic_demo_test.rs"
+#[[bin]]
+#name = "mimic_demo_test"
+#path = "src/bin/mimic_demo_test.rs"
 
-[[bin]]
-name = "simple_ring_test"
-path = "src/bin/simple_ring_test.rs"
+#[[bin]]
+#name = "simple_ring_test"
+#path = "src/bin/simple_ring_test.rs"
 
 [[bin]]
 name = "sentinel_loader"
